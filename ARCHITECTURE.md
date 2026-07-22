@@ -101,7 +101,7 @@ dev.
 
 ---
 
-## Current state (through M3)
+## Current state (through M4)
 
 - **M0:** the shell — FastAPI `GET /health` + the three-panel VS Code-dark layout.
 - **M1:** the event pipe — `events.py` (Event + EventBus + Sequencer) and `ws.py`
@@ -123,6 +123,13 @@ dev.
   guard, cancel), and `control.py` (the registry + start/resolve/cancel the REST layer
   calls). Frontend: the composer starts a session, the store handles the approval
   events, and `ApprovalBar` docks the Approve / Request changes / Reject decision.
+
+- **M4:** the artifacts become visible + portable. `spec_render.py` renders a Spec to
+  markdown (reused for export and, next, SPEC.md); `export.py` + `POST .../export`
+  produce one downloadable file. Frontend: `SpecTab` (version switchers, a recursive
+  `JsonTree`, a lazily-loaded offline `MonacoJson` for the raw view, and the idea
+  evolution), the store now accumulates `artifacts` and can `restoreSession` from the
+  DB, and the `Sidebar` lists/restores past sessions.
 
 Workspaces + terminal (M5), diff/checks (M6), and explain (M7) arrive next — all of
 them simply `event_bus.publish(...)` and lean on the provider layer.

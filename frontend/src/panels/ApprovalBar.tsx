@@ -19,7 +19,7 @@ import { useAppStore } from "../store/appStore";
 /** The docked approval bar. Renders nothing unless a decision is pending. */
 export default function ApprovalBar() {
   const approval = useAppStore((s) => s.awaitingApproval);
-  const sessionId = useAppStore((s) => s.activeSessionId);
+  const sessionId = useAppStore((s) => s.sessionId);
   const [showChanges, setShowChanges] = useState(false);
   const [feedback, setFeedback] = useState("");
   const [busy, setBusy] = useState(false);

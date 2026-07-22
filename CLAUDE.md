@@ -29,8 +29,8 @@ we are. Keep it current — it is the contract every future session inherits.
 | M1 — Event pipe + fake events | ✅ done | see `git log` |
 | M2 — ModelProvider + one real role | ✅ done | see `git log` |
 | M3 — Full crew + approval gate + Spec | ✅ done | see `git log` |
-| M4 — Spec tab + history + export | ⏳ next | — |
-| M5 — Workspaces + Terminal | ▫ todo | — |
+| M4 — Spec tab + history + export | ✅ done | see `git log` |
+| M5 — Workspaces + Terminal | ⏳ next | — |
 | M6 — Diff + Files + Checks | ▫ todo | — |
 | M7 — Explain (mentor) | ▫ todo | — |
 | M8 — Polish + learning pass | ▫ todo | — |
@@ -117,6 +117,18 @@ outranks cleverness, brevity, and micro-performance. Concretely (PROMPT.md §1):
   files and hurt readability. The registry was already peeled off into `control.py`.
 - **"Request changes" re-runs the whole round** with the feedback (simplification of
   §9's "PM decides re-entry point" — flagged in the orchestrator header comment).
+- **Monaco runs offline and lazily.** `lib/monaco.ts` imports only `editor.api` + the
+  JSON language (not the full monaco-editor, which bundles every language) and wires
+  Vite `?worker` imports so no CDN is used. It's imported *inside* `MonacoJson.tsx`,
+  which `SpecTab` loads via `React.lazy`, so Monaco is fetched only when you open the
+  Raw view — keeping the initial bundle ~350kB instead of ~2.6MB.
+- **`render_spec_markdown` (spec_render.py) is shared** by the export (M4) and will be
+  reused for the workspace SPEC.md (M5) — one renderer, identical output everywhere.
+- **Restore is read-only history:** a reloaded session's in-memory orchestrator/gate is
+  gone, so an `awaiting_approval` session can't be resumed after a server restart —
+  restore shows the transcript + artifacts for viewing/export, not for continuing.
+- **Single `sessionId` in the store** (view + signal target), kept across the return to
+  idle so a finished session can still be exported; `awaitingApproval` clears on idle.
 
 ---
 

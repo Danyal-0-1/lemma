@@ -36,9 +36,9 @@ export default function Conversation() {
   const turns = useAppStore((s) => s.turns);
   const phase = useAppStore((s) => s.phase);
   const awaiting = useAppStore((s) => s.awaitingApproval);
-  const activeSessionId = useAppStore((s) => s.activeSessionId);
+  const sessionId = useAppStore((s) => s.sessionId);
   const clearConversation = useAppStore((s) => s.clearConversation);
-  const setActiveSession = useAppStore((s) => s.setActiveSession);
+  const setSessionId = useAppStore((s) => s.setSessionId);
 
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
@@ -59,7 +59,7 @@ export default function Conversation() {
     clearConversation();
     try {
       const { session_id } = await postSession(seed);
-      setActiveSession(session_id);
+      setSessionId(session_id);
       setDraft("");
     } finally {
       setBusy(false);
@@ -67,7 +67,7 @@ export default function Conversation() {
   }
 
   async function handleCancel() {
-    if (activeSessionId) await postCancel(activeSessionId);
+    if (sessionId) await postCancel(sessionId);
   }
 
   async function runTrigger(trigger: () => Promise<unknown>) {

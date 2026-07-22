@@ -20,7 +20,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from uuid import uuid4
 
-from fastapi import FastAPI, HTTPException, WebSocket
+from fastapi import FastAPI, HTTPException, Response, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -29,6 +29,7 @@ from app.demo import run_demo
 from app.events import event_bus
 from app.ideation import repo
 from app.ideation.control import cancel_session, resolve_approval, start_session
+from app.ideation.export import render_session_markdown
 from app.oneshot import run_oneshot
 from app.settings import get_settings
 from app.ws import connect_websocket
@@ -237,3 +238,14 @@ async def cancel_session_route(session_id: str) -> dict[str, str]:
     if not cancel_session(session_id):
         raise HTTPException(status_code=404, detail="session not running")
     return {"status": "cancelling"}
+
+
+@app.post("/api/sessions/{session_id}/export")
+async def export_session(session_id: str) -> Response:
+    """Return the session (transcript + final Spec) as a downloadable markdown file."""
+    markdown = await asyncio.to_thread(render_session_markdown, session_id)
+    if markdown is None:
+        raise HTTPException(status_code=404, detail="session not found")
+    # Content-Disposition makes the browser save it as a file rather than display it.
+    headers = {"Content-Disposition": f'attachment; filename="{session_id}.md"'}
+    return Response(content=markdown, media_type="text/markdown", headers=headers)

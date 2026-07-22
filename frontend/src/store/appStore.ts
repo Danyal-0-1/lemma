@@ -53,24 +53,41 @@ export interface Cost {
   dayUsd: number;
 }
 
+/** One saved artifact version (IdeaDoc or Spec), for the Spec tab. */
+export interface ArtifactRecord {
+  id: number;
+  kind: "ideadoc" | "spec";
+  version: number;
+  content: unknown;
+}
+
+/** The shape GET /api/sessions/{id} returns, used to restore a past session. */
+export interface RestorePayload {
+  session: { id: string; title: string; status: string; round: number };
+  messages: { role: Role; content: string }[];
+  artifacts: { id: number; kind: "ideadoc" | "spec"; version: number; content_json: string }[];
+}
+
 interface AppState {
   status: ConnectionStatus;
   phase: Phase;
   mock: boolean;
   turns: Turn[];
   cost: Cost;
-  // The session currently streaming, so approve/cancel know whom to signal.
-  activeSessionId: string | null;
+  // The session currently in view — running OR restored. Used to signal approve/cancel
+  // (while running) and to export. Kept across the return to idle so export still works.
+  sessionId: string | null;
   // Set when the crew is waiting for the founder's decision; null otherwise.
   awaitingApproval: ApprovalRequest | null;
-  // The latest Spec artifact content (consumed by the Spec tab in M4).
-  latestSpec: unknown | null;
+  // Every artifact version we've seen for the current session (for the Spec tab).
+  artifacts: ArtifactRecord[];
 
   // --- actions ---
   setStatus: (status: ConnectionStatus) => void;
   setMock: (mock: boolean) => void;
-  setActiveSession: (id: string | null) => void;
+  setSessionId: (id: string | null) => void;
   clearConversation: () => void;
+  restoreSession: (payload: RestorePayload) => void;
   applyEvent: (event: Event) => void;
 }
 
@@ -82,24 +99,48 @@ export const useAppStore = create<AppState>((set) => ({
   mock: true,
   turns: [],
   cost: EMPTY_COST,
-  activeSessionId: null,
+  sessionId: null,
   awaitingApproval: null,
-  latestSpec: null,
+  artifacts: [],
 
   setStatus: (status) => set({ status }),
   setMock: (mock) => set({ mock }),
-  setActiveSession: (id) => set({ activeSessionId: id }),
+  setSessionId: (id) => set({ sessionId: id }),
   clearConversation: () =>
-    set({ turns: [], cost: EMPTY_COST, awaitingApproval: null, latestSpec: null }),
+    set({ turns: [], cost: EMPTY_COST, awaitingApproval: null, artifacts: [], sessionId: null }),
+
+  restoreSession: (payload) =>
+    set({
+      // Load a past session read-only: its turns, its artifacts, its id (for export).
+      sessionId: payload.session.id,
+      phase: "idle",
+      awaitingApproval: null,
+      cost: EMPTY_COST,
+      turns: payload.messages.map((message) => ({
+        id: crypto.randomUUID(),
+        role: message.role,
+        round: 0,
+        text: message.content,
+        streaming: false,
+      })),
+      artifacts: payload.artifacts.map((artifact) => ({
+        id: artifact.id,
+        kind: artifact.kind,
+        version: artifact.version,
+        // Stored as a JSON string in the DB; parse it back into an object here.
+        content: JSON.parse(artifact.content_json),
+      })),
+    }),
 
   applyEvent: (event) =>
     set((state) => {
       switch (event.event) {
         case "phase_changed": {
           const { phase } = event.payload as unknown as PhaseChangedPayload;
-          // Returning to idle means the session ended — drop its transient state.
+          // Returning to idle means the session ended — lower the approval bar, but
+          // keep sessionId so the finished session can still be exported.
           if (phase === "idle") {
-            return { phase, activeSessionId: null, awaitingApproval: null };
+            return { phase, awaitingApproval: null };
           }
           return { phase };
         }
@@ -144,7 +185,7 @@ export const useAppStore = create<AppState>((set) => ({
           const p = event.payload as unknown as AwaitingApprovalPayload;
           return {
             // Remember which session to signal, and raise the approval bar.
-            activeSessionId: event.session_id,
+            sessionId: event.session_id,
             awaitingApproval: { artifactId: p.artifact_id, question: p.question },
           };
         }
@@ -156,11 +197,14 @@ export const useAppStore = create<AppState>((set) => ({
         case "artifact_created":
         case "artifact_updated": {
           const p = event.payload as unknown as ArtifactPayload;
-          // Keep the latest Spec around for the Spec tab (M4). IdeaDocs we ignore here.
-          if (p.kind === "spec") {
-            return { latestSpec: p.content };
-          }
-          return {};
+          // Accumulate every version so the Spec tab can offer a version switcher.
+          const record: ArtifactRecord = {
+            id: p.artifact_id,
+            kind: p.kind,
+            version: p.version,
+            content: p.content,
+          };
+          return { artifacts: [...state.artifacts, record] };
         }
 
         case "error": {

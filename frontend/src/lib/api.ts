@@ -94,3 +94,48 @@ export async function postCancel(sessionId: string): Promise<void> {
     throw new Error(`cancel failed: ${response.status}`);
   }
 }
+
+/** One row in the sidebar's session history. */
+export interface SessionSummary {
+  id: string;
+  title: string;
+  status: string;
+  round: number;
+  created_at: string;
+}
+
+/** List past sessions (newest first) for the sidebar history. */
+export async function getSessions(): Promise<SessionSummary[]> {
+  const response = await fetch(`${BACKEND_ORIGIN}/api/sessions`);
+  if (!response.ok) {
+    throw new Error(`list sessions failed: ${response.status}`);
+  }
+  return (await response.json()) as SessionSummary[];
+}
+
+/** Fetch one session with its messages and artifacts (to restore it into the UI). */
+export async function getSession(sessionId: string): Promise<unknown> {
+  const response = await fetch(`${BACKEND_ORIGIN}/api/sessions/${sessionId}`);
+  if (!response.ok) {
+    throw new Error(`get session failed: ${response.status}`);
+  }
+  return await response.json();
+}
+
+/** Download a session (transcript + final Spec) as a markdown file (browser save). */
+export async function exportSession(sessionId: string): Promise<void> {
+  const response = await fetch(`${BACKEND_ORIGIN}/api/sessions/${sessionId}/export`, {
+    method: "POST",
+  });
+  if (!response.ok) {
+    throw new Error(`export failed: ${response.status}`);
+  }
+  // Turn the response into a file the browser saves, via a temporary object URL.
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = `${sessionId}.md`;
+  anchor.click();
+  URL.revokeObjectURL(url);
+}
