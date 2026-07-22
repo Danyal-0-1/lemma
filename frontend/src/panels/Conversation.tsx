@@ -1,23 +1,25 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// Conversation.tsx — the center panel: the crew debate (and later the mentor).
+// Conversation.tsx — the center panel: the crew debate + the composer.
 // READING ORDER: frontend #14
 //
-// WHAT IT DOES (M1): renders the list of turns from the store, each as a bubble with
-// a color-coded role chip and streamed markdown. A "Play demo" button triggers the
-// scripted backend round so you can watch tokens stream in live.
+// WHAT IT DOES (M3): renders the streamed turns, and shows the RIGHT bottom control
+// for the current moment (phase-aware chrome, PROMPT.md §12):
+//   • idle       → a composer to start a session from a seed idea,
+//   • debating   → a "crew is working" line with a Cancel button,
+//   • at the gate → the ApprovalBar (Approve / Request changes / Reject).
 //
-// WHY the role colors + streaming: PROMPT.md §12 specifies per-role colors and
-// token-by-token rendering. Because the store appends tokens to the last turn, this
-// component just re-renders on each change — React does the rest.
+// WHY only one control shows at a time: it keeps the one obvious next action visible
+// and everything else out of the way — the Conductor-simple principle.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
-import { postDemo, postOneshot } from "../lib/api";
+import { postCancel, postDemo, postOneshot, postSession } from "../lib/api";
 import type { Role } from "../lib/events";
 import { useAppStore } from "../store/appStore";
+import ApprovalBar from "./ApprovalBar";
 
 // Display name + Tailwind text-color class for each speaker (colors from theme.css).
 const ROLE_META: Record<Role, { label: string; className: string }> = {
@@ -32,34 +34,47 @@ const ROLE_META: Record<Role, { label: string; className: string }> = {
 /** The center column of the three-panel shell. */
 export default function Conversation() {
   const turns = useAppStore((s) => s.turns);
+  const phase = useAppStore((s) => s.phase);
+  const awaiting = useAppStore((s) => s.awaitingApproval);
+  const activeSessionId = useAppStore((s) => s.activeSessionId);
   const clearConversation = useAppStore((s) => s.clearConversation);
+  const setActiveSession = useAppStore((s) => s.setActiveSession);
+
+  const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
 
-  // Autoscroll to the newest content whenever turns change (a common chat behavior).
+  // Autoscroll to the newest content whenever turns change.
   const bottomRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [turns]);
 
-  async function handlePlayDemo() {
+  // The crew is "working" while in the ideation phase and not yet at the gate.
+  const debating = phase === "ideation" && awaiting === null;
+
+  async function handleStart() {
+    const seed = draft.trim();
+    if (!seed) return;
     setBusy(true);
-    // Clear first so re-running the demo starts from an empty conversation.
     clearConversation();
     try {
-      await postDemo();
+      const { session_id } = await postSession(seed);
+      setActiveSession(session_id);
+      setDraft("");
     } finally {
-      // The events stream in over /ws; we only needed to fire the trigger.
       setBusy(false);
     }
   }
 
-  async function handleOneshot() {
+  async function handleCancel() {
+    if (activeSessionId) await postCancel(activeSessionId);
+  }
+
+  async function runTrigger(trigger: () => Promise<unknown>) {
     setBusy(true);
     clearConversation();
     try {
-      // One real (or mock) Generator turn. In mock mode it's free; with a key it
-      // streams live tokens and the cost meter moves.
-      await postOneshot();
+      await trigger();
     } finally {
       setBusy(false);
     }
@@ -67,7 +82,7 @@ export default function Conversation() {
 
   return (
     <main className="flex h-full flex-col bg-panel">
-      {/* Header with the one action available in the idle/ideation phase for M1. */}
+      {/* Header: dev shortcuts (a single real turn, or the scripted demo). */}
       <div className="flex items-center justify-between border-b border-line px-3 py-1.5">
         <span className="text-[11px] font-semibold uppercase tracking-wide text-muted">
           Conversation
@@ -75,20 +90,20 @@ export default function Conversation() {
         <div className="flex items-center gap-2">
           <button
             type="button"
-            onClick={handleOneshot}
-            disabled={busy}
+            onClick={() => runTrigger(postOneshot)}
+            disabled={busy || debating}
             title="Stream one real (or mock) Generator turn"
             className="rounded border border-line px-2 py-1 text-fg hover:bg-line disabled:opacity-50"
           >
-            ▶ One real turn
+            ▶ One turn
           </button>
           <button
             type="button"
-            onClick={handlePlayDemo}
-            disabled={busy}
-            className="rounded bg-accent px-2 py-1 text-white hover:bg-accent-hover disabled:opacity-50"
+            onClick={() => runTrigger(postDemo)}
+            disabled={busy || debating}
+            className="rounded border border-line px-2 py-1 text-fg hover:bg-line disabled:opacity-50"
           >
-            ▶ Play demo
+            ▶ Demo
           </button>
         </div>
       </div>
@@ -99,8 +114,6 @@ export default function Conversation() {
           <div className="flex h-full items-center justify-center">
             <p className="max-w-md text-center text-muted">
               Start an ideation session — the crew will debate here.
-              <br />
-              <span className="text-[11px]">(or press “Play demo” to see it stream)</span>
             </p>
           </div>
         ) : (
@@ -124,14 +137,48 @@ export default function Conversation() {
         )}
       </div>
 
-      {/* The composer becomes interactive in M3 (ideation) / M7 (mentor). */}
-      <div className="border-t border-line p-3">
-        <textarea
-          className="h-16 w-full resize-none rounded border border-line bg-sidebar px-2 py-1.5 text-fg placeholder:text-muted focus:border-accent focus:outline-none"
-          placeholder="Describe an idea to start… (composer activates in M3)"
-          disabled
-        />
-      </div>
+      {/* Bottom control — exactly one, chosen by phase. */}
+      {awaiting ? (
+        <ApprovalBar />
+      ) : debating ? (
+        <div className="flex items-center justify-between border-t border-line px-3 py-3 text-muted">
+          <span>The crew is debating…</span>
+          <button
+            type="button"
+            onClick={handleCancel}
+            className="rounded border border-line px-3 py-1.5 text-fg hover:bg-line"
+          >
+            Cancel
+          </button>
+        </div>
+      ) : (
+        <div className="border-t border-line p-3">
+          <textarea
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              // Enter starts the session; Shift+Enter inserts a newline.
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                void handleStart();
+              }
+            }}
+            placeholder="Describe an idea to start… (Enter to begin, Shift+Enter for a newline)"
+            disabled={busy}
+            className="h-16 w-full resize-none rounded border border-line bg-sidebar px-2 py-1.5 text-fg placeholder:text-muted focus:border-accent focus:outline-none disabled:opacity-50"
+          />
+          <div className="mt-2 flex justify-end">
+            <button
+              type="button"
+              onClick={handleStart}
+              disabled={busy || !draft.trim()}
+              className="rounded bg-accent px-3 py-1.5 text-white hover:bg-accent-hover disabled:opacity-50"
+            >
+              Start session
+            </button>
+          </div>
+        </div>
+      )}
     </main>
   );
 }

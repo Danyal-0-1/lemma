@@ -20,16 +20,21 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from uuid import uuid4
 
-from fastapi import FastAPI, WebSocket
+from fastapi import FastAPI, HTTPException, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from app.db import init_db
 from app.demo import run_demo
 from app.events import event_bus
+from app.ideation import repo
+from app.ideation.control import cancel_session, resolve_approval, start_session
 from app.oneshot import run_oneshot
 from app.settings import get_settings
 from app.ws import connect_websocket
+
+# The three decisions the founder can make at the approval gate.
+VALID_DECISIONS = {"approve", "changes", "reject"}
 
 # A single version string surfaced in /health and (later) the `hello` WS event, so the
 # frontend can tell which backend it's talking to.
@@ -166,3 +171,69 @@ async def oneshot(request: OneshotRequest) -> dict[str, str]:
     session_id = f"ideation_{uuid4().hex[:8]}"
     asyncio.create_task(run_oneshot(session_id, request.seed))
     return {"session_id": session_id}
+
+
+# ── Ideation sessions (the real crew, M3) ────────────────────────────────────
+
+
+class SessionRequest(BaseModel):
+    """Body for POST /api/sessions: the founder's seed idea to start the crew."""
+
+    seed: str
+
+
+class ApprovalRequest(BaseModel):
+    """Body for POST /api/sessions/{id}/approve: the founder's decision at the gate."""
+
+    decision: str  # "approve" | "changes" | "reject"
+    feedback: str | None = None
+
+
+@app.post("/api/sessions")
+async def create_session(request: SessionRequest) -> dict[str, str]:
+    """Start a full ideation crew run for a seed. The debate streams over /ws."""
+    session_id = f"ideation_{uuid4().hex[:8]}"
+    start_session(session_id, request.seed)
+    return {"session_id": session_id}
+
+
+@app.get("/api/sessions")
+async def list_sessions() -> list[dict[str, object]]:
+    """List past sessions (newest first) for the sidebar history."""
+    sessions = await asyncio.to_thread(repo.list_sessions)
+    return [session.model_dump(mode="json") for session in sessions]
+
+
+@app.get("/api/sessions/{session_id}")
+async def get_session(session_id: str) -> dict[str, object]:
+    """Return one session with its messages and artifacts (for restore/export, M4)."""
+    session = await asyncio.to_thread(repo.get_session_row, session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="session not found")
+    messages = await asyncio.to_thread(repo.get_messages, session_id)
+    artifacts = await asyncio.to_thread(repo.get_artifacts, session_id)
+    return {
+        "session": session.model_dump(mode="json"),
+        "messages": [message.model_dump(mode="json") for message in messages],
+        "artifacts": [artifact.model_dump(mode="json") for artifact in artifacts],
+    }
+
+
+@app.post("/api/sessions/{session_id}/approve")
+async def approve_session(session_id: str, request: ApprovalRequest) -> dict[str, str]:
+    """Deliver the founder's gate decision (approve / changes / reject) to the crew."""
+    if request.decision not in VALID_DECISIONS:
+        raise HTTPException(
+            status_code=422, detail=f"decision must be one of {sorted(VALID_DECISIONS)}"
+        )
+    if not resolve_approval(session_id, request.decision, request.feedback):
+        raise HTTPException(status_code=404, detail="session not running or not awaiting approval")
+    return {"status": "resolved"}
+
+
+@app.post("/api/sessions/{session_id}/cancel")
+async def cancel_session_route(session_id: str) -> dict[str, str]:
+    """Ask a running session to stop between turns."""
+    if not cancel_session(session_id):
+        raise HTTPException(status_code=404, detail="session not running")
+    return {"status": "cancelling"}

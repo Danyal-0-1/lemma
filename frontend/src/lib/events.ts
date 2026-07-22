@@ -66,3 +66,26 @@ export interface ErrorPayload {
   message: string;
   recoverable: boolean;
 }
+
+export interface AwaitingApprovalPayload {
+  artifact_id: number;
+  question: string;
+}
+
+export interface ApprovalResolvedPayload {
+  artifact_id: number;
+  decision: string;
+  feedback?: string | null;
+}
+
+export interface ArtifactPayload {
+  artifact_id: number;
+  kind: "ideadoc" | "spec";
+  version: number;
+  content: unknown;
+}
+
+export interface BudgetExceededPayload {
+  limit: number;
+  used: number;
+}

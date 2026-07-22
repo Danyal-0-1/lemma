@@ -6,9 +6,9 @@
 # `table=True` are BOTH a pydantic model (validation) and a database table (storage)
 # in one declaration — which is why we use it here.
 #
-# WHY start with just CostRecord: M2 needs to remember spend so the cost meter is
-# real, not just a live number that vanishes on reload. The session/message/artifact
-# tables join this file in M3 (we recreate tables in dev — no migrations, per §8).
+# WHY these tables: they let a session survive a reload — you can watch an idea
+# evolve (Artifact is append-only) and restore past runs. We add tables over time and
+# recreate the DB in dev; there are no migrations in v1 (§8).
 # ─────────────────────────────────────────────────────────────────────────────
 
 from __future__ import annotations
@@ -21,6 +21,53 @@ from sqlmodel import Field, SQLModel
 def _utcnow() -> datetime:
     """Return the current UTC time — the default timestamp for new rows."""
     return datetime.now(UTC)
+
+
+class IdeationSession(SQLModel, table=True):
+    """One ideation run: its seed, its status, and which round it's on.
+
+    Exists so a session is durable — listable in the sidebar and restorable after a
+    reload. The id IS the string session_id used across events (e.g. "ideation_9f3a").
+    """
+
+    id: str = Field(primary_key=True)
+    title: str
+    seed_prompt: str
+    # running | awaiting_approval | approved | rejected | cancelled | budget_stopped
+    status: str = "running"
+    round: int = 0
+    created_at: datetime = Field(default_factory=_utcnow)
+
+
+class Message(SQLModel, table=True):
+    """One turn's full text plus its token counts, kept for history and export.
+
+    Exists so the transcript can be replayed and exported later (M4) — the streamed
+    tokens are ephemeral; this is the durable record.
+    """
+
+    id: int | None = Field(default=None, primary_key=True)
+    session_id: str = Field(index=True)
+    role: str
+    content: str
+    tokens_in: int = 0
+    tokens_out: int = 0
+    created_at: datetime = Field(default_factory=_utcnow)
+
+
+class Artifact(SQLModel, table=True):
+    """One saved version of an IdeaDoc or Spec. APPEND-ONLY.
+
+    Exists so nothing is overwritten: each save is a new row with the next version
+    number, so the founder can scrub through how the idea (and Spec) evolved (§8).
+    """
+
+    id: int | None = Field(default=None, primary_key=True)
+    session_id: str = Field(index=True)
+    kind: str  # "ideadoc" | "spec"
+    version: int
+    content_json: str  # the serialized IdeaDoc/Spec
+    created_at: datetime = Field(default_factory=_utcnow)
 
 
 class CostRecord(SQLModel, table=True):

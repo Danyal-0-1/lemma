@@ -101,7 +101,7 @@ dev.
 
 ---
 
-## Current state (through M2)
+## Current state (through M3)
 
 - **M0:** the shell — FastAPI `GET /health` + the three-panel VS Code-dark layout.
 - **M1:** the event pipe — `events.py` (Event + EventBus + Sequencer) and `ws.py`
@@ -116,5 +116,13 @@ dev.
   single Generator turn and move the cost meter. Providers are a PURE layer — they never
   import the bus, DB, or config; the caller owns emission and billing.
 
-The orchestrator (M3), workspaces + terminal (M5), diff/checks (M6), and explain (M7)
-arrive next — all of them simply `event_bus.publish(...)` and lean on the provider layer.
+- **M3:** the ideation crew. `ideation/schema.py` (IdeaDoc + Spec with validators),
+  `roles.py` (the verbatim role prompts), `parsing.py` (JSON extraction + one-shot
+  retry), `repo.py` (session/message/artifact persistence, append-only artifacts),
+  `orchestrator.py` (the state machine: Generator→Researcher→Critic→PM→gate, budget
+  guard, cancel), and `control.py` (the registry + start/resolve/cancel the REST layer
+  calls). Frontend: the composer starts a session, the store handles the approval
+  events, and `ApprovalBar` docks the Approve / Request changes / Reject decision.
+
+Workspaces + terminal (M5), diff/checks (M6), and explain (M7) arrive next — all of
+them simply `event_bus.publish(...)` and lean on the provider layer.

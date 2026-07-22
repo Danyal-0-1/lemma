@@ -15,7 +15,11 @@
 import { create } from "zustand";
 
 import type {
+  ArtifactPayload,
+  AwaitingApprovalPayload,
+  BudgetExceededPayload,
   CostUpdatePayload,
+  ErrorPayload,
   Event,
   PhaseChangedPayload,
   Phase,
@@ -24,6 +28,12 @@ import type {
   TurnStartedPayload,
 } from "../lib/events";
 import type { ConnectionStatus } from "../lib/ws";
+
+/** A pending human decision at the approval gate. */
+export interface ApprovalRequest {
+  artifactId: number;
+  question: string;
+}
 
 /** One bubble in the Conversation: a single crew (or mentor) turn. */
 export interface Turn {
@@ -49,10 +59,17 @@ interface AppState {
   mock: boolean;
   turns: Turn[];
   cost: Cost;
+  // The session currently streaming, so approve/cancel know whom to signal.
+  activeSessionId: string | null;
+  // Set when the crew is waiting for the founder's decision; null otherwise.
+  awaitingApproval: ApprovalRequest | null;
+  // The latest Spec artifact content (consumed by the Spec tab in M4).
+  latestSpec: unknown | null;
 
   // --- actions ---
   setStatus: (status: ConnectionStatus) => void;
   setMock: (mock: boolean) => void;
+  setActiveSession: (id: string | null) => void;
   clearConversation: () => void;
   applyEvent: (event: Event) => void;
 }
@@ -65,16 +82,25 @@ export const useAppStore = create<AppState>((set) => ({
   mock: true,
   turns: [],
   cost: EMPTY_COST,
+  activeSessionId: null,
+  awaitingApproval: null,
+  latestSpec: null,
 
   setStatus: (status) => set({ status }),
   setMock: (mock) => set({ mock }),
-  clearConversation: () => set({ turns: [], cost: EMPTY_COST }),
+  setActiveSession: (id) => set({ activeSessionId: id }),
+  clearConversation: () =>
+    set({ turns: [], cost: EMPTY_COST, awaitingApproval: null, latestSpec: null }),
 
   applyEvent: (event) =>
     set((state) => {
       switch (event.event) {
         case "phase_changed": {
           const { phase } = event.payload as unknown as PhaseChangedPayload;
+          // Returning to idle means the session ended — drop its transient state.
+          if (phase === "idle") {
+            return { phase, activeSessionId: null, awaitingApproval: null };
+          }
           return { phase };
         }
 
@@ -114,6 +140,40 @@ export const useAppStore = create<AppState>((set) => ({
           };
         }
 
+        case "awaiting_approval": {
+          const p = event.payload as unknown as AwaitingApprovalPayload;
+          return {
+            // Remember which session to signal, and raise the approval bar.
+            activeSessionId: event.session_id,
+            awaitingApproval: { artifactId: p.artifact_id, question: p.question },
+          };
+        }
+
+        case "approval_resolved":
+          // The decision has been recorded; lower the approval bar.
+          return { awaitingApproval: null };
+
+        case "artifact_created":
+        case "artifact_updated": {
+          const p = event.payload as unknown as ArtifactPayload;
+          // Keep the latest Spec around for the Spec tab (M4). IdeaDocs we ignore here.
+          if (p.kind === "spec") {
+            return { latestSpec: p.content };
+          }
+          return {};
+        }
+
+        case "error": {
+          const p = event.payload as unknown as ErrorPayload;
+          return { turns: appendSystemTurn(state.turns, `⚠️ ${p.message}`) };
+        }
+
+        case "budget_exceeded": {
+          const p = event.payload as unknown as BudgetExceededPayload;
+          const text = `⚠️ Budget stop: used ${p.used} tokens (limit ${p.limit}).`;
+          return { turns: appendSystemTurn(state.turns, text) };
+        }
+
         // hello / heartbeat / anything we don't render: no state change.
         default:
           return {};
@@ -137,4 +197,16 @@ function markLastTurnDone(turns: Turn[]): Turn[] {
   const last = next[next.length - 1];
   next[next.length - 1] = { ...last, streaming: false };
   return next;
+}
+
+/** Append a non-streaming "system" bubble (used for errors and budget notices). */
+function appendSystemTurn(turns: Turn[], text: string): Turn[] {
+  const turn: Turn = {
+    id: crypto.randomUUID(),
+    role: "system",
+    round: 0,
+    text,
+    streaming: false,
+  };
+  return [...turns, turn];
 }

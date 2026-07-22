@@ -55,3 +55,42 @@ export async function postOneshot(seed?: string): Promise<{ session_id: string }
   }
   return (await response.json()) as { session_id: string };
 }
+
+/** Start a full ideation crew session for a seed idea (M3). Streams over /ws. */
+export async function postSession(seed: string): Promise<{ session_id: string }> {
+  const response = await fetch(`${BACKEND_ORIGIN}/api/sessions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ seed }),
+  });
+  if (!response.ok) {
+    throw new Error(`start session failed: ${response.status}`);
+  }
+  return (await response.json()) as { session_id: string };
+}
+
+/** Send the founder's gate decision (approve / changes / reject) for a session. */
+export async function postApproval(
+  sessionId: string,
+  decision: "approve" | "changes" | "reject",
+  feedback?: string,
+): Promise<void> {
+  const response = await fetch(`${BACKEND_ORIGIN}/api/sessions/${sessionId}/approve`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ decision, feedback: feedback ?? null }),
+  });
+  if (!response.ok) {
+    throw new Error(`approval failed: ${response.status}`);
+  }
+}
+
+/** Ask a running session to stop between turns. */
+export async function postCancel(sessionId: string): Promise<void> {
+  const response = await fetch(`${BACKEND_ORIGIN}/api/sessions/${sessionId}/cancel`, {
+    method: "POST",
+  });
+  if (!response.ok) {
+    throw new Error(`cancel failed: ${response.status}`);
+  }
+}

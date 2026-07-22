@@ -28,8 +28,8 @@ we are. Keep it current — it is the contract every future session inherits.
 | M0 — Scaffold | ✅ done | see `git log` |
 | M1 — Event pipe + fake events | ✅ done | see `git log` |
 | M2 — ModelProvider + one real role | ✅ done | see `git log` |
-| M3 — Full crew + approval gate + Spec | ⏳ next | — |
-| M4 — Spec tab + history + export | ▫ todo | — |
+| M3 — Full crew + approval gate + Spec | ✅ done | see `git log` |
+| M4 — Spec tab + history + export | ⏳ next | — |
 | M5 — Workspaces + Terminal | ▫ todo | — |
 | M6 — Diff + Files + Checks | ▫ todo | — |
 | M7 — Explain (mentor) | ▫ todo | — |
@@ -103,6 +103,20 @@ outranks cleverness, brevity, and micro-performance. Concretely (PROMPT.md §1):
   It runs via `asyncio.to_thread` from async code because SQLite calls are blocking.
 - **Two config sources, kept apart:** `settings.py` = secrets/paths from env/.env;
   `config.py` = crew choices (roles/budget/pricing) from committed `config.toml`.
+- **The orchestrator is a hand-written state machine, no framework** (§3). The human
+  gate blocks on an `asyncio.Event` inside a `SessionControl`; `control.py` holds the
+  registry so REST `approve`/`cancel` can signal a running session by id.
+- **Roles output JSON; parsing is liberal.** `parsing.py` strips a ```json fence (or
+  finds the widest bracket span) then validates into the schema; on failure the
+  orchestrator retries the turn ONCE with the validation error appended, then emits a
+  graceful `error` (never crashes). The streamed JSON also shows in the Conversation.
+- **Artifacts are append-only:** each IdeaDoc/Spec save is a new versioned row, so the
+  UI can replay how an idea evolved (a run produced 9 ideadoc + 2 spec versions).
+- **Accepted file-size exception:** `ideation/orchestrator.py` is ~310 lines (>250
+  target). It's THE state machine; splitting the class would scatter one flow across
+  files and hurt readability. The registry was already peeled off into `control.py`.
+- **"Request changes" re-runs the whole round** with the feedback (simplification of
+  §9's "PM decides re-entry point" — flagged in the orchestrator header comment).
 
 ---
 

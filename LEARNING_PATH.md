@@ -145,4 +145,49 @@ and the `TextDelta | StreamDone` union from memory, you understand the provider 
 
 ---
 
-*(M3 and beyond are appended as each milestone lands.)*
+## M3 — Full crew + approval gate + Spec
+
+**What this milestone teaches:** how to turn a language model into a *reliable*
+multi-step process with a human in the loop — a state machine that streams four roles,
+validates their JSON, saves versioned artifacts, blocks for a human decision, and stops
+safely on a budget or a bad response. This is the "heart" of Phase 0.
+
+**Read in this order (data first, then the machine, then the UI):**
+
+1. [`backend/app/ideation/schema.py`](backend/app/ideation/schema.py) — the IdeaDoc and
+   Spec, with validators. Teaches: validating a boundary; coercing vs. rejecting.
+2. [`backend/app/ideation/roles.py`](backend/app/ideation/roles.py) — the exact prompt
+   for each role. Teaches: prompts as behavior.
+3. [`backend/app/ideation/parsing.py`](backend/app/ideation/parsing.py) — pulling JSON
+   out of messy text. Teaches: be liberal in what you accept.
+4. [`backend/app/ideation/repo.py`](backend/app/ideation/repo.py) — the repository
+   pattern (all DB access in named functions).
+5. [`backend/app/ideation/orchestrator.py`](backend/app/ideation/orchestrator.py) — the
+   state machine: the round loop, the retry, the budget guard, and `_await_gate`.
+   Teaches: modelling a process as explicit transitions.
+6. [`backend/app/ideation/control.py`](backend/app/ideation/control.py) — how an HTTP
+   request (approve/cancel) reaches a running async task via an `asyncio.Event`.
+7. [`frontend/src/store/appStore.ts`](frontend/src/store/appStore.ts) — the new event
+   cases (awaiting_approval, artifacts, errors).
+8. [`frontend/src/panels/ApprovalBar.tsx`](frontend/src/panels/ApprovalBar.tsx) +
+   [`Conversation.tsx`](frontend/src/panels/Conversation.tsx) — phase-aware chrome: one
+   bottom control at a time (composer / debating+cancel / approval bar).
+
+**RETYPE THIS → [`backend/app/ideation/schema.py`](backend/app/ideation/schema.py).**
+It's the contract the whole crew aims at, and its validators are where "an LLM said
+something" becomes "data we can trust." (The orchestrator is the most important file to
+*read*, but the schema is the best-sized one to *retype*.)
+
+**Exercises:**
+
+1. Tighten a bound: change `MAX_FEATURES` to 4 in `schema.py`. The mock PM emits 3
+   features, so predict whether a run still reaches the gate. Then raise the mock PM's
+   Spec to 5 features and predict again; run it and watch the retry fire.
+2. In `config.toml`, set `[budget] max_session_tokens = 1`. Predict how far a run gets
+   before `budget_exceeded`. Start a session and confirm.
+3. Break parsing: in `parsing.py`, make `extract_json` return `"not json"`. Predict what
+   the founder sees (hint: retry once, then a graceful error bubble). Run it.
+
+---
+
+*(M4 and beyond are appended as each milestone lands.)*
