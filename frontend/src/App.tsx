@@ -1,110 +1,58 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// App.tsx — the three-panel shell. READING ORDER: frontend #8
+// App.tsx — the three-panel shell + the one place the WebSocket is wired up.
+// READING ORDER: frontend #17
 //
-// WHAT IT DOES (M0): renders the VS Code-dark layout the whole app lives inside —
-// a title bar, three columns (Sidebar | Conversation | Review pane), and a status
-// bar — with placeholder content. No data or interactivity yet; those arrive with
-// the event pipe in M1.
+// WHAT IT DOES: lays out the fixed three panels (now resizable) and, in a single
+// useEffect, opens the /ws event stream. Events flow into the zustand store; the
+// panels read from the store and render.
 //
-// WHY the layout is exactly three panels: PROMPT.md §12 is strict about it — never
-// more panels, never floating windows. Getting the skeleton right now means every
-// later milestone just fills a panel in, rather than restructuring the page.
-//
-// This is a single file for M0 so the whole shell is visible at once. In M1 the
-// panels are split into their own components under src/panels/.
+// WHY the WebSocket lives in a useEffect with a cleanup return: React 18 Strict Mode
+// (on in main.tsx) mounts → unmounts → mounts components in development to catch
+// effects that don't clean up. Because we close the socket in the cleanup, each
+// cycle fully tears down its connection — so we never end up with two "ghost"
+// sockets double-firing events. This is the exact bug the addendum warned about.
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** A section heading used inside the sidebar (e.g. "SESSIONS", "WORKSPACES"). */
-function SidebarSection({ label }: { label: string }) {
-  return (
-    <div className="px-3 pt-3 pb-1 text-[11px] font-semibold uppercase tracking-wide text-muted">
-      {label}
-    </div>
-  );
+import { useEffect } from "react";
+import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
+
+import { getHealth, WS_URL } from "./lib/api";
+import { EventSocket } from "./lib/ws";
+import Conversation from "./panels/Conversation";
+import RightPane from "./panels/rightpane/RightPane";
+import Sidebar from "./panels/Sidebar";
+import StatusBar from "./panels/StatusBar";
+import { useAppStore } from "./store/appStore";
+
+/** A thin draggable divider between two panels. */
+function Handle() {
+  return <PanelResizeHandle className="w-px bg-line transition-colors hover:bg-accent" />;
 }
 
-/** The left column: two flat lists (sessions, workspaces) plus their New buttons. */
-function Sidebar() {
-  return (
-    <aside className="flex h-full w-60 flex-none flex-col border-r border-line bg-sidebar">
-      <SidebarSection label="Sessions" />
-      <p className="px-3 pb-2 text-muted">No ideation sessions yet.</p>
-      <button
-        className="mx-3 mb-2 rounded bg-accent px-3 py-1.5 text-left text-white hover:bg-accent-hover"
-        // Wired up in M1; inert placeholder for now.
-        type="button"
-        disabled
-      >
-        + New session
-      </button>
-
-      <SidebarSection label="Workspaces" />
-      <p className="px-3 pb-2 text-muted">No workspaces yet.</p>
-
-      {/* History lives here as a collapsed section once archiving exists (M8). */}
-      <div className="mt-auto border-t border-line px-3 py-2 text-[11px] text-muted">
-        History (empty)
-      </div>
-    </aside>
-  );
-}
-
-/** The center column: the crew debate / mentor conversation and its composer. */
-function Conversation() {
-  return (
-    <main className="flex h-full flex-1 flex-col bg-panel">
-      <div className="flex flex-1 items-center justify-center p-8">
-        {/* Empty states teach — this exact copy is specified in PROMPT.md §12. */}
-        <p className="max-w-md text-center text-muted">
-          Start an ideation session — the crew will debate here.
-        </p>
-      </div>
-      <div className="border-t border-line p-3">
-        <textarea
-          className="h-16 w-full resize-none rounded border border-line bg-sidebar px-2 py-1.5 text-fg placeholder:text-muted focus:border-accent focus:outline-none"
-          placeholder="Describe an idea to start… (composer activates in M1)"
-          disabled
-        />
-      </div>
-    </main>
-  );
-}
-
-/** The right column: phase-aware review tabs. In the idle phase only Spec exists. */
-function ReviewPane() {
-  return (
-    <section className="flex h-full w-[440px] flex-none flex-col border-l border-line bg-panel">
-      <div className="flex items-center gap-1 border-b border-line bg-sidebar px-2 py-1.5">
-        {/* Only the tabs valid in the current phase are ever rendered (phase-aware chrome). */}
-        <span className="rounded px-2 py-0.5 text-fg">Spec</span>
-      </div>
-      <div className="flex flex-1 items-center justify-center p-8">
-        <p className="max-w-xs text-center text-muted">
-          The approved Spec will appear here once the crew produces one.
-        </p>
-      </div>
-    </section>
-  );
-}
-
-/** The bottom bar: connection dot, current phase, cost meter, and the MOCK badge. */
-function StatusBar() {
-  return (
-    <footer className="flex h-6 flex-none items-center gap-4 border-t border-line bg-sidebar px-3 text-[11px] text-muted">
-      {/* The dot goes green/amber once the WebSocket connects in M1. Neutral for now. */}
-      <span className="flex items-center gap-1.5">
-        <span className="inline-block h-2 w-2 rounded-full bg-muted" />
-        disconnected
-      </span>
-      <span>phase: idle</span>
-      <span>$0.00 today</span>
-      <span className="ml-auto rounded bg-line px-1.5 py-0.5 font-mono text-warn">MOCK</span>
-    </footer>
-  );
-}
-
-/** The application root: the fixed three-panel shell everything else renders into. */
+/** The application root. */
 export default function App() {
+  // Open the event stream once, on mount; close it on unmount (Strict-Mode-safe).
+  useEffect(() => {
+    // We read store actions via getState() inside the handlers so this effect never
+    // needs to re-run — it depends on nothing and runs exactly once per mount.
+    const socket = new EventSocket(WS_URL, {
+      onStatus: (status) => useAppStore.getState().setStatus(status),
+      onEvent: (event) => useAppStore.getState().applyEvent(event),
+    });
+    socket.connect();
+    return () => socket.close();
+  }, []);
+
+  // Ask the backend once whether it's in mock mode, so the MOCK badge is accurate.
+  useEffect(() => {
+    getHealth()
+      .then((health) => useAppStore.getState().setMock(health.mock_llm))
+      .catch(() => {
+        // If health fails the WebSocket's dot already shows the connection problem;
+        // nothing else to do here.
+      });
+  }, []);
+
   return (
     <div className="flex h-full flex-col">
       {/* Slim title bar. */}
@@ -112,12 +60,20 @@ export default function App() {
         AI Company
       </header>
 
-      {/* The three panels. In M1 these become resizable via react-resizable-panels. */}
-      <div className="flex min-h-0 flex-1">
-        <Sidebar />
-        <Conversation />
-        <ReviewPane />
-      </div>
+      {/* Exactly three panels, now resizable. Sizes are percentages of the width. */}
+      <PanelGroup direction="horizontal" className="min-h-0 flex-1">
+        <Panel defaultSize={18} minSize={12} className="border-r border-line">
+          <Sidebar />
+        </Panel>
+        <Handle />
+        <Panel minSize={30}>
+          <Conversation />
+        </Panel>
+        <Handle />
+        <Panel defaultSize={34} minSize={20} className="border-l border-line">
+          <RightPane />
+        </Panel>
+      </PanelGroup>
 
       <StatusBar />
     </div>

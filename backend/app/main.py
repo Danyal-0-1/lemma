@@ -14,14 +14,19 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from uuid import uuid4
 
-from fastapi import FastAPI
+from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.demo import run_demo
+from app.events import event_bus
 from app.settings import get_settings
+from app.ws import connect_websocket
 
 # A single version string surfaced in /health and (later) the `hello` WS event, so the
 # frontend can tell which backend it's talking to.
@@ -109,3 +114,28 @@ def health() -> dict[str, object]:
         "version": SERVER_VERSION,
         "mock_llm": settings.mock_llm,
     }
+
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket) -> None:
+    """The single event stream: every subsystem's output reaches the browser here.
+
+    Exists as the outbound pipe. The real work (subscribe, hello, pump, heartbeat,
+    clean disconnect) lives in ws.py so this route stays a one-liner — the pattern
+    every reader can predict.
+    """
+    await connect_websocket(websocket, event_bus, SERVER_VERSION)
+
+
+@app.post("/api/demo")
+async def demo() -> dict[str, str]:
+    """Kick off the scripted fake crew round (M1) and return its session id.
+
+    Exists so the frontend's "Play demo" button has something to call. We launch the
+    demo as a background task and return immediately — the conversation then streams
+    in over /ws, exactly as a real ideation session will.
+    """
+    session_id = f"ideation_{uuid4().hex[:8]}"
+    # Fire-and-forget: the task publishes events on its own; the HTTP call is just the trigger.
+    asyncio.create_task(run_demo(session_id))
+    return {"session_id": session_id}

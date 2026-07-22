@@ -101,8 +101,16 @@ dev.
 
 ---
 
-## Current state (M0)
+## Current state (through M1)
 
-Only the shell exists: an empty FastAPI app exposing `GET /health`, and a Vite/React app
-rendering the three-panel VS Code-dark layout with placeholder content. The EventBus,
-providers, orchestrator, workspaces, and terminal arrive in later milestones as mapped above.
+- **M0:** the shell — FastAPI `GET /health` + the three-panel VS Code-dark layout.
+- **M1:** the event pipe is live. `events.py` (Event envelope + EventBus + Sequencer)
+  and `ws.py` (the `/ws` connection: hello, pump, 20s heartbeat, clean disconnect) are
+  in place; `demo.py` streams a scripted crew round via `POST /api/demo`. The frontend
+  has `ws.ts` (auto-reconnect + seq-gap detection, Strict-Mode-safe), a zustand store
+  (`appStore.ts`) whose `applyEvent` mirrors the backend event list, the resizable
+  three-panel layout, a Conversation that renders role-colored streaming markdown, and
+  a StatusBar whose dot reflects the live connection.
+
+The providers, orchestrator, persistence, workspaces, and terminal arrive in later
+milestones as mapped above — all of them will simply `event_bus.publish(...)`.

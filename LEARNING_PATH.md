@@ -52,4 +52,52 @@ startup check are declared. Everything else in the backend hangs off this file.
 
 ---
 
-*(M1 and beyond are appended as each milestone lands.)*
+## M1 — Event pipe with fake events
+
+**What this milestone teaches:** how the whole app streams live updates. One
+WebSocket carries a uniform envelope; an in-process pub/sub bus decouples "something
+happened" from "send it to the browser"; and the frontend keeps that socket alive,
+turns events into state, and renders them. This is the backbone every later feature
+plugs into.
+
+**Read in this order (backend first, then follow one event from publish to pixel):**
+
+1. [`backend/app/events.py`](backend/app/events.py) — the `Event` envelope, the
+   `EventBus` (subscribe/publish/unsubscribe), and the `Sequencer` (per-connection
+   `seq`). Teaches: pub/sub and why `seq` is stamped at send time.
+2. [`backend/app/ws.py`](backend/app/ws.py) — one `/ws` connection: hello, the pump
+   task, the 20s heartbeat, and clean disconnect. Teaches: running concurrent
+   asyncio tasks and always cleaning up in `finally`.
+3. [`backend/app/demo.py`](backend/app/demo.py) — the scripted crew round that proves
+   the pipe end-to-end with zero cost. Teaches: streaming by chunking + delays.
+4. [`backend/app/main.py`](backend/app/main.py) — how `/ws` and `POST /api/demo` are
+   registered (thin routes that delegate).
+5. [`frontend/src/lib/events.ts`](frontend/src/lib/events.ts) — the TS mirror of the
+   envelope. Teaches: typing wire data.
+6. [`frontend/src/lib/ws.ts`](frontend/src/lib/ws.ts) — the client: reconnect backoff,
+   seq-gap warnings, and the Strict-Mode-safe `close()`. Teaches: resilient sockets.
+7. [`frontend/src/store/appStore.ts`](frontend/src/store/appStore.ts) — `applyEvent`,
+   the switch that turns each event into UI state. Teaches: zustand + immutable updates.
+8. [`frontend/src/panels/Conversation.tsx`](frontend/src/panels/Conversation.tsx) and
+   [`App.tsx`](frontend/src/App.tsx) — where state becomes pixels, and the single
+   `useEffect` that owns the socket's lifecycle.
+
+**RETYPE THIS → [`backend/app/events.py`](backend/app/events.py).** It's the heart of
+the architecture and small enough to retype in one sitting. If you understand why
+`publish` is synchronous and why `seq` is assigned in the `Sequencer` (not the bus),
+you understand the event pipe.
+
+**Exercises:**
+
+1. Add a new field `mood` to `Event` in `events.py` with a default, then log it in
+   `ws.py`. Predict whether the frontend breaks (hint: it ignores unknown fields).
+   Verify by playing the demo.
+2. In `demo.py`, lower `CHUNK_DELAY_SECONDS` to `0` and raise it to `0.3`. Predict how
+   the Conversation feels in each case, then watch the demo to confirm.
+3. Break the pipe on purpose: in the `Sequencer`, comment out `self._seq += 1`. Predict
+   what the client's console shows (hint: read the gap-detection code in `ws.ts`), then
+   run it and read the warning.
+
+---
+
+*(M2 and beyond are appended as each milestone lands.)*

@@ -26,8 +26,8 @@ we are. Keep it current — it is the contract every future session inherits.
 | Milestone | State | Commit |
 |---|---|---|
 | M0 — Scaffold | ✅ done | see `git log` |
-| M1 — Event pipe + fake events | ⏳ next | — |
-| M2 — ModelProvider + one real role | ▫ todo | — |
+| M1 — Event pipe + fake events | ✅ done | see `git log` |
+| M2 — ModelProvider + one real role | ⏳ next | — |
 | M3 — Full crew + approval gate + Spec | ▫ todo | — |
 | M4 — Spec tab + history + export | ▫ todo | — |
 | M5 — Workspaces + Terminal | ▫ todo | — |
@@ -87,6 +87,13 @@ outranks cleverness, brevity, and micro-performance. Concretely (PROMPT.md §1):
   utility classes visible and teachable — better for a learner retyping it.
 - **Mock mode (`MOCK_LLM=true`) is the default and a first-class feature**, not a stub.
   The whole app is demoable with zero keys and zero cost.
+- **`seq` is per-connection, assigned at send time** by `Sequencer` in `events.py`, not
+  at publish time — because two browsers each get their own 1,2,3… stream. The client
+  (`ws.ts`) warns on gaps but treats them as informational (teaching), not fatal.
+- **The client store survives a `/ws` disconnect** (conversation lives in zustand, not
+  the socket). Note: in *dev*, Vite's HMR can do a full page reload (e.g. on first-load
+  dependency optimization or when its own HMR socket blips), which resets the store —
+  that's a dev-server artifact, not app behavior; a production build never does this.
 
 ---
 
