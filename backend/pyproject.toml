@@ -16,15 +16,16 @@ version = "0.1.0"
 description = "Local-first AI ideation + build orchestration shell (backend)."
 requires-python = ">=3.12"
 
-# Runtime dependencies present as of M0. More arrive later:
-#   litellm            → M2 (ModelProvider)
-#   sqlmodel           → M3 (persistence)
+# Runtime dependencies. Added milestone by milestone so each package appears with
+# the feature that needs it.
 dependencies = [
     "fastapi>=0.115",         # the web framework: routes, WebSockets, validation
     "uvicorn[standard]>=0.30", # the ASGI server that actually runs FastAPI
     "pydantic>=2.7",          # data models / validation (v2)
     "pydantic-settings>=2.3", # typed configuration from environment variables
     "python-dotenv>=1.0",     # load backend/.env into the process (only this process)
+    "litellm>=1.51",          # M2: one interface over DeepSeek/Anthropic/OpenAI/local
+    "sqlmodel>=0.0.22",       # M2+: SQLite persistence (CostRecord now; more in M3)
 ]
 
 # Development-only dependencies: test runner, async test support, linter, and the

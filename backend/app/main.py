@@ -22,9 +22,12 @@ from uuid import uuid4
 
 from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
+from app.db import init_db
 from app.demo import run_demo
 from app.events import event_bus
+from app.oneshot import run_oneshot
 from app.settings import get_settings
 from app.ws import connect_websocket
 
@@ -69,6 +72,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     # Hard guard: never bind a code-executing server beyond localhost by accident.
     settings.assert_safe_binding()
+
+    # Create the SQLite database + tables if needed (used by the cost meter, M2+).
+    init_db()
 
     # Soft guard: warn (don't crash) if we'd try to call real models with no key.
     if not settings.mock_llm and not settings.has_any_key():
@@ -138,4 +144,25 @@ async def demo() -> dict[str, str]:
     session_id = f"ideation_{uuid4().hex[:8]}"
     # Fire-and-forget: the task publishes events on its own; the HTTP call is just the trigger.
     asyncio.create_task(run_demo(session_id))
+    return {"session_id": session_id}
+
+
+class OneshotRequest(BaseModel):
+    """Body for POST /api/oneshot: the seed idea to hand the Generator."""
+
+    # A sensible default so the button works with no typing; the composer supplies
+    # a real seed in M3.
+    seed: str = "a small tool that helps me build better habits"
+
+
+@app.post("/api/oneshot")
+async def oneshot(request: OneshotRequest) -> dict[str, str]:
+    """Stream a single real (or mock) Generator turn and return its session id.
+
+    Exists as M2's end-to-end test: this is the first endpoint that calls a model
+    through the provider layer, prices the result, and moves the cost meter. Like the
+    demo, it runs in the background and streams over /ws.
+    """
+    session_id = f"ideation_{uuid4().hex[:8]}"
+    asyncio.create_task(run_oneshot(session_id, request.seed))
     return {"session_id": session_id}

@@ -100,4 +100,49 @@ you understand the event pipe.
 
 ---
 
-*(M2 and beyond are appended as each milestone lands.)*
+## M2 — ModelProvider + one real role
+
+**What this milestone teaches:** how the app talks to a language model behind a clean
+interface — so the same code runs against a free mock or a real API — and how it turns
+token usage into a real, persisted cost meter. This is the "call an AI and bill it"
+plumbing the whole crew (M3) is built on.
+
+**Read in this order (the interface, then both sides, then the money, then the seam):**
+
+1. [`backend/app/providers/base.py`](backend/app/providers/base.py) — the
+   `ModelProvider` Protocol and the `ChatMessage` / `TextDelta` / `StreamDone` types.
+   Teaches: structural interfaces + a streamed tagged union.
+2. [`backend/app/providers/mock_provider.py`](backend/app/providers/mock_provider.py) —
+   the free, canned implementation. Teaches: why mock mode is a real feature.
+3. [`backend/app/providers/litellm_provider.py`](backend/app/providers/litellm_provider.py)
+   — the live implementation: streaming, retry-with-backoff, usage capture. Teaches:
+   handling flaky networks without crashing a turn.
+4. [`backend/app/providers/factory.py`](backend/app/providers/factory.py) — one place
+   decides mock vs. live. Teaches: the factory pattern.
+5. [`backend/app/config.py`](backend/app/config.py) — validating `config.toml` into
+   typed models. Teaches: `tomllib` + trusting external files only after validation.
+6. [`backend/app/models.py`](backend/app/models.py) + [`db.py`](backend/app/db.py) —
+   the first table (`CostRecord`) and the SQLite engine. Teaches: SQLModel basics.
+7. [`backend/app/cost.py`](backend/app/cost.py) — price → persist → summarize.
+   Teaches: aggregate queries (`func.sum`) and keeping side effects out of pure logic.
+8. [`backend/app/oneshot.py`](backend/app/oneshot.py) — where provider + cost + events
+   meet, end to end. Teaches: composing the layers; `asyncio.to_thread` for blocking IO.
+
+**RETYPE THIS → [`backend/app/providers/base.py`](backend/app/providers/base.py).** It's
+the contract everything else depends on. If you can reproduce the `stream_chat` signature
+and the `TextDelta | StreamDone` union from memory, you understand the provider layer.
+
+**Exercises:**
+
+1. Add a fourth idea to the Generator's canned answer in `mock_provider.py`. Predict
+   whether the cost meter changes when you run "One real turn" (hint: usage is estimated
+   from the answer's length). Verify.
+2. In `config.toml`, double the `output` price for `deepseek/deepseek-chat`. Predict how
+   the meter changes on the next mock turn, then run it and compare.
+3. Break pricing on purpose: delete the `deepseek/deepseek-chat` entry from
+   `[pricing]`. Predict what the meter shows and what the logs say (hint: read
+   `estimate_usd`), then run it.
+
+---
+
+*(M3 and beyond are appended as each milestone lands.)*

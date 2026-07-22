@@ -27,8 +27,8 @@ we are. Keep it current — it is the contract every future session inherits.
 |---|---|---|
 | M0 — Scaffold | ✅ done | see `git log` |
 | M1 — Event pipe + fake events | ✅ done | see `git log` |
-| M2 — ModelProvider + one real role | ⏳ next | — |
-| M3 — Full crew + approval gate + Spec | ▫ todo | — |
+| M2 — ModelProvider + one real role | ✅ done | see `git log` |
+| M3 — Full crew + approval gate + Spec | ⏳ next | — |
 | M4 — Spec tab + history + export | ▫ todo | — |
 | M5 — Workspaces + Terminal | ▫ todo | — |
 | M6 — Diff + Files + Checks | ▫ todo | — |
@@ -94,6 +94,15 @@ outranks cleverness, brevity, and micro-performance. Concretely (PROMPT.md §1):
   the socket). Note: in *dev*, Vite's HMR can do a full page reload (e.g. on first-load
   dependency optimization or when its own HMR socket blips), which resets the store —
   that's a dev-server artifact, not app behavior; a production build never does this.
+- **Providers are a pure layer** (`providers/`): they never import the event bus, the
+  DB, or config. They take messages, yield `TextDelta`/`StreamDone`. Callers (oneshot,
+  later the orchestrator) own event emission and cost recording. This keeps them
+  trivially testable and makes `MockProvider` a true drop-in for the real one.
+- **Cost path:** `cost.record_and_summarize()` prices a turn from `config.toml`,
+  persists a `CostRecord`, and returns the `cost_update` payload (session + day totals).
+  It runs via `asyncio.to_thread` from async code because SQLite calls are blocking.
+- **Two config sources, kept apart:** `settings.py` = secrets/paths from env/.env;
+  `config.py` = crew choices (roles/budget/pricing) from committed `config.toml`.
 
 ---
 

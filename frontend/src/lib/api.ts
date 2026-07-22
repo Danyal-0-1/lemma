@@ -41,3 +41,17 @@ export async function postDemo(): Promise<{ session_id: string }> {
   }
   return (await response.json()) as { session_id: string };
 }
+
+/** Stream ONE real (or mock) Generator turn for a seed idea (M2). Streams over /ws. */
+export async function postOneshot(seed?: string): Promise<{ session_id: string }> {
+  const response = await fetch(`${BACKEND_ORIGIN}/api/oneshot`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    // Send the seed only if given; the backend has a sensible default otherwise.
+    body: JSON.stringify(seed ? { seed } : {}),
+  });
+  if (!response.ok) {
+    throw new Error(`oneshot failed: ${response.status}`);
+  }
+  return (await response.json()) as { session_id: string };
+}

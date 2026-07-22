@@ -101,16 +101,20 @@ dev.
 
 ---
 
-## Current state (through M1)
+## Current state (through M2)
 
 - **M0:** the shell — FastAPI `GET /health` + the three-panel VS Code-dark layout.
-- **M1:** the event pipe is live. `events.py` (Event envelope + EventBus + Sequencer)
-  and `ws.py` (the `/ws` connection: hello, pump, 20s heartbeat, clean disconnect) are
-  in place; `demo.py` streams a scripted crew round via `POST /api/demo`. The frontend
-  has `ws.ts` (auto-reconnect + seq-gap detection, Strict-Mode-safe), a zustand store
-  (`appStore.ts`) whose `applyEvent` mirrors the backend event list, the resizable
-  three-panel layout, a Conversation that renders role-colored streaming markdown, and
-  a StatusBar whose dot reflects the live connection.
+- **M1:** the event pipe — `events.py` (Event + EventBus + Sequencer) and `ws.py`
+  (`/ws`: hello, pump, heartbeat, clean disconnect); `demo.py` + `POST /api/demo`.
+  Frontend: `ws.ts` (reconnect + seq-gap, Strict-Mode-safe), zustand `appStore`,
+  resizable three-panel layout, role-colored streaming Conversation, live StatusBar dot.
+- **M2:** the ModelProvider layer. `providers/base.py` is the interface
+  (`stream_chat` yields `TextDelta`… then `StreamDone`); `mock_provider.py` (free) and
+  `litellm_provider.py` (real, with retry/usage) implement it; `factory.py` picks one.
+  `config.py` loads `config.toml`; `db.py`/`models.py` add SQLite + `CostRecord`;
+  `cost.py` prices+persists+summarizes; `oneshot.py` + `POST /api/oneshot` stream a
+  single Generator turn and move the cost meter. Providers are a PURE layer — they never
+  import the bus, DB, or config; the caller owns emission and billing.
 
-The providers, orchestrator, persistence, workspaces, and terminal arrive in later
-milestones as mapped above — all of them will simply `event_bus.publish(...)`.
+The orchestrator (M3), workspaces + terminal (M5), diff/checks (M6), and explain (M7)
+arrive next — all of them simply `event_bus.publish(...)` and lean on the provider layer.

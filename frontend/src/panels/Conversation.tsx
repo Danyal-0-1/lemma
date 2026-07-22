@@ -15,7 +15,7 @@ import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
-import { postDemo } from "../lib/api";
+import { postDemo, postOneshot } from "../lib/api";
 import type { Role } from "../lib/events";
 import { useAppStore } from "../store/appStore";
 
@@ -53,6 +53,18 @@ export default function Conversation() {
     }
   }
 
+  async function handleOneshot() {
+    setBusy(true);
+    clearConversation();
+    try {
+      // One real (or mock) Generator turn. In mock mode it's free; with a key it
+      // streams live tokens and the cost meter moves.
+      await postOneshot();
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <main className="flex h-full flex-col bg-panel">
       {/* Header with the one action available in the idle/ideation phase for M1. */}
@@ -60,14 +72,25 @@ export default function Conversation() {
         <span className="text-[11px] font-semibold uppercase tracking-wide text-muted">
           Conversation
         </span>
-        <button
-          type="button"
-          onClick={handlePlayDemo}
-          disabled={busy}
-          className="rounded bg-accent px-2 py-1 text-white hover:bg-accent-hover disabled:opacity-50"
-        >
-          ▶ Play demo
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={handleOneshot}
+            disabled={busy}
+            title="Stream one real (or mock) Generator turn"
+            className="rounded border border-line px-2 py-1 text-fg hover:bg-line disabled:opacity-50"
+          >
+            ▶ One real turn
+          </button>
+          <button
+            type="button"
+            onClick={handlePlayDemo}
+            disabled={busy}
+            className="rounded bg-accent px-2 py-1 text-white hover:bg-accent-hover disabled:opacity-50"
+          >
+            ▶ Play demo
+          </button>
+        </div>
       </div>
 
       {/* The scrolling transcript. */}
