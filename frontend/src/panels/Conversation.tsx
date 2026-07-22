@@ -51,6 +51,8 @@ export default function Conversation() {
 
   // The crew is "working" while in the ideation phase and not yet at the gate.
   const debating = phase === "ideation" && awaiting === null;
+  // In the build phase the composer is replaced by a hint (mentor chat is M7).
+  const building = phase === "build";
 
   async function handleStart() {
     const seed = draft.trim();
@@ -140,6 +142,12 @@ export default function Conversation() {
       {/* Bottom control — exactly one, chosen by phase. */}
       {awaiting ? (
         <ApprovalBar />
+      ) : building ? (
+        <div className="border-t border-line px-3 py-3 text-muted">
+          You're building in the workspace — use the Terminal to run your coding agent.
+          <br />
+          <span className="text-[11px]">(Mentor chat arrives in M7.)</span>
+        </div>
       ) : debating ? (
         <div className="flex items-center justify-between border-t border-line px-3 py-3 text-muted">
           <span>The crew is debating…</span>

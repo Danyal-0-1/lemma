@@ -26,6 +26,7 @@ import type {
   Role,
   TokenStreamPayload,
   TurnStartedPayload,
+  WorkspaceCreatedPayload,
 } from "../lib/events";
 import type { ConnectionStatus } from "../lib/ws";
 
@@ -33,6 +34,13 @@ import type { ConnectionStatus } from "../lib/ws";
 export interface ApprovalRequest {
   artifactId: number;
   question: string;
+}
+
+/** The build workspace currently in view (its id, on-disk path, and slug). */
+export interface WorkspaceInfo {
+  id: string;
+  path: string;
+  slug: string;
 }
 
 /** One bubble in the Conversation: a single crew (or mentor) turn. */
@@ -81,6 +89,8 @@ interface AppState {
   awaitingApproval: ApprovalRequest | null;
   // Every artifact version we've seen for the current session (for the Spec tab).
   artifacts: ArtifactRecord[];
+  // The build workspace in view, or null when we're not in the build phase.
+  activeWorkspace: WorkspaceInfo | null;
 
   // --- actions ---
   setStatus: (status: ConnectionStatus) => void;
@@ -88,6 +98,7 @@ interface AppState {
   setSessionId: (id: string | null) => void;
   clearConversation: () => void;
   restoreSession: (payload: RestorePayload) => void;
+  activateWorkspace: (workspace: WorkspaceInfo) => void;
   applyEvent: (event: Event) => void;
 }
 
@@ -102,10 +113,12 @@ export const useAppStore = create<AppState>((set) => ({
   sessionId: null,
   awaitingApproval: null,
   artifacts: [],
+  activeWorkspace: null,
 
   setStatus: (status) => set({ status }),
   setMock: (mock) => set({ mock }),
   setSessionId: (id) => set({ sessionId: id }),
+  activateWorkspace: (workspace) => set({ activeWorkspace: workspace, phase: "build" }),
   clearConversation: () =>
     set({ turns: [], cost: EMPTY_COST, awaitingApproval: null, artifacts: [], sessionId: null }),
 
@@ -142,7 +155,16 @@ export const useAppStore = create<AppState>((set) => ({
           if (phase === "idle") {
             return { phase, awaitingApproval: null };
           }
-          return { phase };
+          // Starting a new ideation run leaves the build phase behind.
+          if (phase === "ideation") {
+            return { phase, activeWorkspace: null };
+          }
+          return { phase }; // build
+        }
+
+        case "workspace_created": {
+          const p = event.payload as unknown as WorkspaceCreatedPayload;
+          return { activeWorkspace: { id: p.workspace_id, path: p.path, slug: p.slug } };
         }
 
         case "agent_turn_started": {

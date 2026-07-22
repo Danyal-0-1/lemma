@@ -70,6 +70,21 @@ class Artifact(SQLModel, table=True):
     created_at: datetime = Field(default_factory=_utcnow)
 
 
+class Workspace(SQLModel, table=True):
+    """One build project: a real directory on disk created from an approved Spec.
+
+    Exists so a workspace survives restarts — listable in the sidebar, reopenable, and
+    (M8) archivable. The directory is never deleted in v1; archiving just flips status.
+    """
+
+    id: str = Field(primary_key=True)  # e.g. "ws_1a2b3c4d"
+    slug: str
+    path: str  # absolute path to the workspace directory
+    spec_artifact_id: int  # which Spec artifact this was built from
+    status: str = "active"  # active | archived
+    created_at: datetime = Field(default_factory=_utcnow)
+
+
 class CostRecord(SQLModel, table=True):
     """One priced model call: which session, which model, how many tokens, what cost.
 

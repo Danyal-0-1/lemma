@@ -101,7 +101,7 @@ dev.
 
 ---
 
-## Current state (through M4)
+## Current state (through M5)
 
 - **M0:** the shell — FastAPI `GET /health` + the three-panel VS Code-dark layout.
 - **M1:** the event pipe — `events.py` (Event + EventBus + Sequencer) and `ws.py`
@@ -131,5 +131,13 @@ dev.
   evolution), the store now accumulates `artifacts` and can `restoreSession` from the
   DB, and the `Sidebar` lists/restores past sessions.
 
-Workspaces + terminal (M5), diff/checks (M6), and explain (M7) arrive next — all of
-them simply `event_bus.publish(...)` and lean on the provider layer.
+- **M5:** Phase 1 begins. `workspaces/manager.py` turns a Spec into a real git repo
+  under `~/ai-company-workspaces/<slug>` (SPEC.md/spec.json/CLAUDE.md/aicompany.json);
+  `build/coordinator.py` emits `workspace_created` + `phase_changed(build)`;
+  `terminal/pty_service.py` runs an interactive shell over the **separate `/pty`
+  socket** with the env sanitized (keys stripped) and macOS-safe reaping. Frontend: the
+  xterm `TerminalTab` (lazy-loaded, stays mounted across tab switches), phase-aware
+  build tabs, and Open-in-editor / Reveal.
+
+Diff/Files/Checks (M6) and Explain (M7) arrive next — all of them simply
+`event_bus.publish(...)` and lean on the provider layer.

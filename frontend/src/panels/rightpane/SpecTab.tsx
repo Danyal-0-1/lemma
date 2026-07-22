@@ -14,7 +14,7 @@
 
 import { lazy, Suspense, useState } from "react";
 
-import { exportSession } from "../../lib/api";
+import { exportSession, postWorkspaceFromSpec } from "../../lib/api";
 import { useAppStore } from "../../store/appStore";
 import JsonTree from "./JsonTree";
 
@@ -90,6 +90,8 @@ export default function SpecTab() {
 
   const specs = artifacts.filter((a) => a.kind === "spec");
   const ideaDocs = artifacts.filter((a) => a.kind === "ideadoc");
+  // The most recent Spec is the one we'd build a workspace from.
+  const buildableSpec = specs.length > 0 ? specs[specs.length - 1] : null;
 
   if (specs.length === 0 && ideaDocs.length === 0) {
     return (
@@ -127,15 +129,27 @@ export default function SpecTab() {
         >
           Ideas
         </button>
-        {sessionId && (
-          <button
-            type="button"
-            onClick={() => exportSession(sessionId)}
-            className="ml-auto rounded border border-line px-2 py-0.5 text-fg hover:bg-line"
-          >
-            ⭳ Export
-          </button>
-        )}
+        <div className="ml-auto flex items-center gap-2">
+          {buildableSpec && (
+            // Build a real workspace from this Spec → enters the build phase (M5).
+            <button
+              type="button"
+              onClick={() => postWorkspaceFromSpec(buildableSpec.id)}
+              className="rounded bg-accent px-2 py-0.5 text-white hover:bg-accent-hover"
+            >
+              Create workspace
+            </button>
+          )}
+          {sessionId && (
+            <button
+              type="button"
+              onClick={() => exportSession(sessionId)}
+              className="rounded border border-line px-2 py-0.5 text-fg hover:bg-line"
+            >
+              ⭳ Export
+            </button>
+          )}
+        </div>
       </div>
 
       {view === "spec" && shownSpec ? (

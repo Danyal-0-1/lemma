@@ -17,6 +17,11 @@ export const BACKEND_ORIGIN = "http://127.0.0.1:8000";
 /** The event-stream WebSocket URL, derived from the same origin. */
 export const WS_URL = "ws://127.0.0.1:8000/ws";
 
+/** Build the raw-bytes PTY socket URL for a given terminal id. */
+export function ptyUrl(terminalId: string): string {
+  return `ws://127.0.0.1:8000/pty/${terminalId}`;
+}
+
 /** What GET /health returns. Used to show the MOCK badge accurately. */
 export interface Health {
   status: string;
@@ -120,6 +125,74 @@ export async function getSession(sessionId: string): Promise<unknown> {
     throw new Error(`get session failed: ${response.status}`);
   }
   return await response.json();
+}
+
+// --- Workspaces + terminal (Phase 1, M5) -------------------------------------
+
+/** One workspace row in the sidebar. */
+export interface WorkspaceSummary {
+  id: string;
+  slug: string;
+  path: string;
+  status: string;
+  created_at: string;
+}
+
+/** Build a workspace directory from a Spec artifact; the app enters the build phase. */
+export async function postWorkspaceFromSpec(
+  artifactId: number,
+): Promise<{ workspace_id: string; path: string; slug: string }> {
+  const response = await fetch(`${BACKEND_ORIGIN}/api/workspaces/from-spec/${artifactId}`, {
+    method: "POST",
+  });
+  if (!response.ok) {
+    throw new Error(`create workspace failed: ${response.status}`);
+  }
+  return (await response.json()) as { workspace_id: string; path: string; slug: string };
+}
+
+/** List workspaces (newest first) for the sidebar. */
+export async function getWorkspaces(): Promise<WorkspaceSummary[]> {
+  const response = await fetch(`${BACKEND_ORIGIN}/api/workspaces`);
+  if (!response.ok) {
+    throw new Error(`list workspaces failed: ${response.status}`);
+  }
+  return (await response.json()) as WorkspaceSummary[];
+}
+
+/** Spawn a shell in a workspace and get the terminal id to open a /pty socket to. */
+export async function createTerminal(workspaceId: string): Promise<{ terminal_id: string }> {
+  const response = await fetch(`${BACKEND_ORIGIN}/api/terminals`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ workspace_id: workspaceId }),
+  });
+  if (!response.ok) {
+    throw new Error(`create terminal failed: ${response.status}`);
+  }
+  return (await response.json()) as { terminal_id: string };
+}
+
+/** Ask the backend to open a workspace in the user's editor (or reveal it). */
+export async function openInEditor(workspaceId: string): Promise<string> {
+  const response = await fetch(`${BACKEND_ORIGIN}/api/workspaces/${workspaceId}/open-in-editor`, {
+    method: "POST",
+  });
+  if (!response.ok) {
+    throw new Error(`open-in-editor failed: ${response.status}`);
+  }
+  return ((await response.json()) as { result: string }).result;
+}
+
+/** Ask the backend to reveal a workspace in the OS file manager. */
+export async function revealWorkspace(workspaceId: string): Promise<string> {
+  const response = await fetch(`${BACKEND_ORIGIN}/api/workspaces/${workspaceId}/reveal`, {
+    method: "POST",
+  });
+  if (!response.ok) {
+    throw new Error(`reveal failed: ${response.status}`);
+  }
+  return ((await response.json()) as { result: string }).result;
 }
 
 /** Download a session (transcript + final Spec) as a markdown file (browser save). */

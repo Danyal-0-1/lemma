@@ -12,7 +12,13 @@
 
 import { useEffect, useState } from "react";
 
-import { getSession, getSessions, type SessionSummary } from "../lib/api";
+import {
+  getSession,
+  getSessions,
+  getWorkspaces,
+  type SessionSummary,
+  type WorkspaceSummary,
+} from "../lib/api";
 import type { RestorePayload } from "../store/appStore";
 import { useAppStore } from "../store/appStore";
 
@@ -24,6 +30,8 @@ const STATUS_DOT: Record<string, string> = {
   rejected: "bg-err",
   cancelled: "bg-muted",
   budget_stopped: "bg-err",
+  active: "bg-ok",
+  archived: "bg-muted",
 };
 
 /** A small uppercase section heading (e.g. "SESSIONS"). */
@@ -39,20 +47,27 @@ function SectionLabel({ label }: { label: string }) {
 export default function Sidebar() {
   const phase = useAppStore((s) => s.phase);
   const currentSessionId = useAppStore((s) => s.sessionId);
+  const activeWorkspace = useAppStore((s) => s.activeWorkspace);
   const restoreSession = useAppStore((s) => s.restoreSession);
+  const activateWorkspace = useAppStore((s) => s.activateWorkspace);
   const clearConversation = useAppStore((s) => s.clearConversation);
 
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
+  const [workspaces, setWorkspaces] = useState<WorkspaceSummary[]>([]);
 
-  // Load the session list on mount, and again each time we return to idle (a session
-  // just finished, so it should now appear/updated in the list).
+  // Refresh the lists on mount and whenever the phase changes (e.g. a session finished
+  // or a workspace was just created).
   useEffect(() => {
-    if (phase !== "idle") return;
-    getSessions()
-      .then(setSessions)
-      .catch(() => {
-        // A failed fetch just leaves the list as-is; the status dot shows the outage.
-      });
+    getWorkspaces()
+      .then(setWorkspaces)
+      .catch(() => {});
+    if (phase === "idle") {
+      getSessions()
+        .then(setSessions)
+        .catch(() => {
+          // A failed fetch just leaves the list as-is; the status dot shows the outage.
+        });
+    }
   }, [phase]);
 
   async function handleOpen(id: string) {
@@ -95,7 +110,34 @@ export default function Sidebar() {
       </button>
 
       <SectionLabel label="Workspaces" />
-      <p className="px-3 pb-2 text-muted">No workspaces yet.</p>
+      {workspaces.length === 0 ? (
+        <p className="px-3 pb-2 text-muted">No workspaces yet.</p>
+      ) : (
+        <div className="flex flex-col">
+          {workspaces.map((workspace) => (
+            <button
+              key={workspace.id}
+              type="button"
+              onClick={() =>
+                activateWorkspace({
+                  id: workspace.id,
+                  path: workspace.path,
+                  slug: workspace.slug,
+                })
+              }
+              title={`${workspace.slug} — ${workspace.status}`}
+              className={`flex items-center gap-2 px-3 py-1.5 text-left hover:bg-line ${
+                workspace.id === activeWorkspace?.id ? "bg-line" : ""
+              }`}
+            >
+              <span
+                className={`h-2 w-2 flex-none rounded-full ${STATUS_DOT[workspace.status] ?? "bg-muted"}`}
+              />
+              <span className="truncate text-fg">{workspace.slug}</span>
+            </button>
+          ))}
+        </div>
+      )}
 
       {/* Archived items collapse into History (M8). Shown here so the shape is visible. */}
       <div className="mt-auto border-t border-line px-3 py-2 text-[11px] text-muted">

@@ -102,3 +102,9 @@ def get_artifacts(session_id: str) -> list[Artifact]:
                 select(Artifact).where(Artifact.session_id == session_id).order_by(Artifact.id)
             )
         )
+
+
+def get_artifact_by_id(artifact_id: int) -> Artifact | None:
+    """Return one artifact by its database id — used when building a workspace (M5)."""
+    with get_session() as db:
+        return db.get(Artifact, artifact_id)

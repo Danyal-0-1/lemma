@@ -89,3 +89,9 @@ export interface BudgetExceededPayload {
   limit: number;
   used: number;
 }
+
+export interface WorkspaceCreatedPayload {
+  workspace_id: string;
+  path: string;
+  slug: string;
+}

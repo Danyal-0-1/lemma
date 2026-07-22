@@ -24,6 +24,7 @@ from fastapi import FastAPI, HTTPException, Response, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+from app.build.coordinator import build_from_spec
 from app.db import init_db
 from app.demo import run_demo
 from app.events import event_bus
@@ -32,6 +33,8 @@ from app.ideation.control import cancel_session, resolve_approval, start_session
 from app.ideation.export import render_session_markdown
 from app.oneshot import run_oneshot
 from app.settings import get_settings
+from app.terminal.pty_service import connect_pty, create_terminal
+from app.workspaces import manager
 from app.ws import connect_websocket
 
 # The three decisions the founder can make at the approval gate.
@@ -249,3 +252,78 @@ async def export_session(session_id: str) -> Response:
     # Content-Disposition makes the browser save it as a file rather than display it.
     headers = {"Content-Disposition": f'attachment; filename="{session_id}.md"'}
     return Response(content=markdown, media_type="text/markdown", headers=headers)
+
+
+# ── Workspaces + terminal (Phase 1, M5) ──────────────────────────────────────
+
+
+class TerminalRequest(BaseModel):
+    """Body for POST /api/terminals: which workspace to open a shell in."""
+
+    workspace_id: str
+
+
+@app.post("/api/workspaces/from-spec/{artifact_id}")
+async def create_workspace_from_spec(artifact_id: int) -> dict[str, str]:
+    """Build a workspace directory from a Spec artifact and enter the build phase."""
+    try:
+        workspace = await build_from_spec(artifact_id)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    return {"workspace_id": workspace.id, "path": workspace.path, "slug": workspace.slug}
+
+
+@app.get("/api/workspaces")
+async def list_workspaces() -> list[dict[str, object]]:
+    """List workspaces (newest first) for the sidebar."""
+    workspaces = await asyncio.to_thread(manager.list_workspaces)
+    return [workspace.model_dump(mode="json") for workspace in workspaces]
+
+
+@app.get("/api/workspaces/{workspace_id}")
+async def get_workspace(workspace_id: str) -> dict[str, object]:
+    """Return one workspace by id."""
+    workspace = await asyncio.to_thread(manager.get_workspace, workspace_id)
+    if workspace is None:
+        raise HTTPException(status_code=404, detail="workspace not found")
+    return workspace.model_dump(mode="json")
+
+
+@app.post("/api/workspaces/{workspace_id}/open-in-editor")
+async def open_workspace_in_editor(workspace_id: str) -> dict[str, str]:
+    """Open the workspace folder in the user's editor (or reveal it)."""
+    workspace = await asyncio.to_thread(manager.get_workspace, workspace_id)
+    if workspace is None:
+        raise HTTPException(status_code=404, detail="workspace not found")
+    result = await asyncio.to_thread(manager.open_in_editor, workspace.path)
+    return {"result": result}
+
+
+@app.post("/api/workspaces/{workspace_id}/reveal")
+async def reveal_workspace(workspace_id: str) -> dict[str, str]:
+    """Reveal the workspace folder in the OS file manager."""
+    workspace = await asyncio.to_thread(manager.get_workspace, workspace_id)
+    if workspace is None:
+        raise HTTPException(status_code=404, detail="workspace not found")
+    result = await asyncio.to_thread(manager.reveal, workspace.path)
+    return {"result": result}
+
+
+@app.post("/api/terminals")
+async def create_terminal_route(request: TerminalRequest) -> dict[str, str]:
+    """Spawn a shell in a workspace and return the terminal id to connect /pty to."""
+    workspace = await asyncio.to_thread(manager.get_workspace, request.workspace_id)
+    if workspace is None:
+        raise HTTPException(status_code=404, detail="workspace not found")
+    terminal_id = create_terminal(workspace.path)
+    return {"terminal_id": terminal_id}
+
+
+@app.websocket("/pty/{terminal_id}")
+async def pty_endpoint(websocket: WebSocket, terminal_id: str) -> None:
+    """Raw byte stream between the browser terminal and the workspace shell.
+
+    Kept separate from /ws (which carries the JSON event envelope) so terminal bytes
+    stay off the event bus — see ARCHITECTURE.md.
+    """
+    await connect_pty(websocket, terminal_id)

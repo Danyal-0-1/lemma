@@ -230,4 +230,44 @@ objects/arrays it renders a child node per entry — the same function, all the 
 
 ---
 
-*(M5 and beyond are appended as each milestone lands.)*
+## M5 — Workspaces + Terminal
+
+**What this milestone teaches:** how the app crosses from "planning" into "building" —
+turning a Spec into a real git repo on disk, and running a genuine interactive shell
+inside the browser. It also holds the single most important safety measure in the app
+(stripping API keys before spawning the shell).
+
+**Read in this order:**
+
+1. [`backend/app/workspaces/manager.py`](backend/app/workspaces/manager.py) — make a
+   directory, `git init`, write the scaffold files, first commit. Teaches: driving git
+   and the filesystem from Python.
+2. [`backend/app/terminal/pty_service.py`](backend/app/terminal/pty_service.py) — the
+   PTY: spawn a shell, pump bytes, resize, reap. **Read `_sanitized_env` first** — it's
+   the billing-safety line. Teaches: pseudo-terminals, non-blocking fds, process reaping.
+3. [`backend/app/build/coordinator.py`](backend/app/build/coordinator.py) — the bridge
+   that makes a workspace and announces the build phase.
+4. [`frontend/src/panels/rightpane/TerminalTab.tsx`](frontend/src/panels/rightpane/TerminalTab.tsx)
+   — xterm.js ↔ /pty: binary keystrokes, text resize, Strict-Mode-safe cleanup.
+5. [`frontend/src/panels/rightpane/RightPane.tsx`](frontend/src/panels/rightpane/RightPane.tsx)
+   — phase-aware tabs and keeping the terminal mounted across tab switches.
+
+**RETYPE THIS → [`backend/app/terminal/pty_service.py`](backend/app/terminal/pty_service.py).**
+It's the most instructive file in the app: a real PTY in ~180 lines, and the one place
+where getting it wrong (leaking a key, leaving a zombie) has real consequences. Type it
+slowly and make sure you can explain `_sanitized_env` and `close()`.
+
+**Exercises:**
+
+1. Start the app with `ANTHROPIC_API_KEY=test123 make dev`, open a workspace terminal,
+   and run `echo $ANTHROPIC_API_KEY`. Predict the output. (It should be EMPTY — that's
+   the whole point.) Then comment out the two `env.pop(...)` lines and try again.
+2. In `manager.py`, change the commit message. Predict where you'd see it, then create a
+   workspace and run `git -C ~/ai-company-workspaces/<slug> log`.
+3. Open a workspace, switch to the Spec tab and back to Terminal. Predict whether your
+   shell session survives (it should — the terminal stays mounted). Verify with `echo $$`
+   before and after (same PID = same shell).
+
+---
+
+*(M6 and beyond are appended as each milestone lands.)*

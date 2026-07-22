@@ -30,8 +30,8 @@ we are. Keep it current — it is the contract every future session inherits.
 | M2 — ModelProvider + one real role | ✅ done | see `git log` |
 | M3 — Full crew + approval gate + Spec | ✅ done | see `git log` |
 | M4 — Spec tab + history + export | ✅ done | see `git log` |
-| M5 — Workspaces + Terminal | ⏳ next | — |
-| M6 — Diff + Files + Checks | ▫ todo | — |
+| M5 — Workspaces + Terminal | ✅ done | see `git log` |
+| M6 — Diff + Files + Checks | ⏳ next | — |
 | M7 — Explain (mentor) | ▫ todo | — |
 | M8 — Polish + learning pass | ▫ todo | — |
 | M9 — Headless AgentProvider | ▫ optional | — |
@@ -129,6 +129,23 @@ outranks cleverness, brevity, and micro-performance. Concretely (PROMPT.md §1):
   restore shows the transcript + artifacts for viewing/export, not for continuing.
 - **Single `sessionId` in the store** (view + signal target), kept across the return to
   idle so a finished session can still be exported; `awaitingApproval` clears on idle.
+- **⚠️ Billing safety (the app's most important line):** `pty_service._sanitized_env()`
+  deletes `ANTHROPIC_API_KEY`/`OPENAI_API_KEY` before spawning the shell, so an
+  interactive `claude` in the terminal uses the subscription, not metered API billing.
+  Verified live: the shell shows an EMPTY key even when the backend process was started
+  WITH the key set. `test_pty.py` guards this — never weaken it.
+- **PTY design:** `pty.fork()` + `os.execvpe` (controlling terminal set correctly for
+  job control); non-blocking master fd read via `loop.add_reader` → ordered queue →
+  ws; keystrokes are BINARY frames, resize is a TEXT control frame. Reaping is
+  macOS-safe (close master → SIGHUP → `waitpid`, escalate to SIGKILL) run off the loop.
+- **/pty is a separate socket** carrying raw bytes (not the JSON `/ws` envelope) — see
+  ARCHITECTURE.md. Terminal registry is in-memory; a terminal is reaped on disconnect.
+- **TerminalTab is Strict-Mode-safe:** if unmounted before its /pty connects, it opens
+  a throwaway socket so the backend reaps the orphaned shell (dev double-mount → the
+  extra shell is cleaned up, one live terminal remains).
+- **Workspaces live OUTSIDE the repo** at `~/ai-company-workspaces/<slug>` (collision →
+  `-slug-2`), git-inited with SPEC.md/spec.json/CLAUDE.md/aicompany.json. Directory is
+  never deleted in v1. xterm loads lazily (build phase only), like Monaco.
 
 ---
 
