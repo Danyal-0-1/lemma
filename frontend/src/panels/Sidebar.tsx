@@ -48,6 +48,7 @@ export default function Sidebar() {
   const phase = useAppStore((s) => s.phase);
   const currentSessionId = useAppStore((s) => s.sessionId);
   const activeWorkspace = useAppStore((s) => s.activeWorkspace);
+  const diffCounts = useAppStore((s) => s.diffCounts);
   const restoreSession = useAppStore((s) => s.restoreSession);
   const activateWorkspace = useAppStore((s) => s.activateWorkspace);
   const clearConversation = useAppStore((s) => s.clearConversation);
@@ -133,7 +134,14 @@ export default function Sidebar() {
               <span
                 className={`h-2 w-2 flex-none rounded-full ${STATUS_DOT[workspace.status] ?? "bg-muted"}`}
               />
-              <span className="truncate text-fg">{workspace.slug}</span>
+              <span className="flex-1 truncate text-fg">{workspace.slug}</span>
+              {/* Conductor-style +/- counts on the active workspace when it's dirty. */}
+              {workspace.id === activeWorkspace?.id && diffCounts && diffCounts.additions + diffCounts.deletions > 0 && (
+                <span className="flex-none font-mono text-[11px]">
+                  <span className="text-ok">+{diffCounts.additions}</span>{" "}
+                  <span className="text-err">−{diffCounts.deletions}</span>
+                </span>
+              )}
             </button>
           ))}
         </div>

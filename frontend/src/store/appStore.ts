@@ -18,6 +18,9 @@ import type {
   ArtifactPayload,
   AwaitingApprovalPayload,
   BudgetExceededPayload,
+  CheckFinishedPayload,
+  CheckOutputPayload,
+  CheckStartedPayload,
   CostUpdatePayload,
   ErrorPayload,
   Event,
@@ -29,6 +32,13 @@ import type {
   WorkspaceCreatedPayload,
 } from "../lib/events";
 import type { ConnectionStatus } from "../lib/ws";
+
+/** The live state of one check run (for its badge + streamed output). */
+export interface CheckRun {
+  status: "running" | "pass" | "fail";
+  output: string[];
+  exitCode?: number;
+}
 
 /** A pending human decision at the approval gate. */
 export interface ApprovalRequest {
@@ -91,11 +101,16 @@ interface AppState {
   artifacts: ArtifactRecord[];
   // The build workspace in view, or null when we're not in the build phase.
   activeWorkspace: WorkspaceInfo | null;
+  // The active workspace's +/- diff totals (set by the Diff tab; shown in the sidebar).
+  diffCounts: { additions: number; deletions: number } | null;
+  // Per-check run state, keyed by check id (badge + streamed output).
+  checkRuns: Record<string, CheckRun>;
 
   // --- actions ---
   setStatus: (status: ConnectionStatus) => void;
   setMock: (mock: boolean) => void;
   setSessionId: (id: string | null) => void;
+  setDiffCounts: (counts: { additions: number; deletions: number } | null) => void;
   clearConversation: () => void;
   restoreSession: (payload: RestorePayload) => void;
   activateWorkspace: (workspace: WorkspaceInfo) => void;
@@ -114,11 +129,16 @@ export const useAppStore = create<AppState>((set) => ({
   awaitingApproval: null,
   artifacts: [],
   activeWorkspace: null,
+  diffCounts: null,
+  checkRuns: {},
 
   setStatus: (status) => set({ status }),
   setMock: (mock) => set({ mock }),
   setSessionId: (id) => set({ sessionId: id }),
-  activateWorkspace: (workspace) => set({ activeWorkspace: workspace, phase: "build" }),
+  setDiffCounts: (counts) => set({ diffCounts: counts }),
+  activateWorkspace: (workspace) =>
+    // Switching workspaces resets the review state so we don't show stale diff/checks.
+    set({ activeWorkspace: workspace, phase: "build", diffCounts: null, checkRuns: {} }),
   clearConversation: () =>
     set({ turns: [], cost: EMPTY_COST, awaitingApproval: null, artifacts: [], sessionId: null }),
 
@@ -155,16 +175,53 @@ export const useAppStore = create<AppState>((set) => ({
           if (phase === "idle") {
             return { phase, awaitingApproval: null };
           }
-          // Starting a new ideation run leaves the build phase behind.
+          // Starting a new ideation run leaves the build phase (and its review state).
           if (phase === "ideation") {
-            return { phase, activeWorkspace: null };
+            return { phase, activeWorkspace: null, diffCounts: null, checkRuns: {} };
           }
           return { phase }; // build
         }
 
         case "workspace_created": {
           const p = event.payload as unknown as WorkspaceCreatedPayload;
-          return { activeWorkspace: { id: p.workspace_id, path: p.path, slug: p.slug } };
+          return {
+            activeWorkspace: { id: p.workspace_id, path: p.path, slug: p.slug },
+            diffCounts: null,
+            checkRuns: {},
+          };
+        }
+
+        case "check_started": {
+          const p = event.payload as unknown as CheckStartedPayload;
+          return {
+            checkRuns: { ...state.checkRuns, [p.check_id]: { status: "running", output: [] } },
+          };
+        }
+
+        case "check_output": {
+          const p = event.payload as unknown as CheckOutputPayload;
+          const existing = state.checkRuns[p.check_id] ?? { status: "running", output: [] };
+          return {
+            checkRuns: {
+              ...state.checkRuns,
+              [p.check_id]: { ...existing, output: [...existing.output, p.line] },
+            },
+          };
+        }
+
+        case "check_finished": {
+          const p = event.payload as unknown as CheckFinishedPayload;
+          const existing = state.checkRuns[p.check_id] ?? { status: "running", output: [] };
+          return {
+            checkRuns: {
+              ...state.checkRuns,
+              [p.check_id]: {
+                ...existing,
+                status: p.exit_code === 0 ? "pass" : "fail",
+                exitCode: p.exit_code,
+              },
+            },
+          };
         }
 
         case "agent_turn_started": {

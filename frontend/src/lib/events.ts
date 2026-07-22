@@ -95,3 +95,21 @@ export interface WorkspaceCreatedPayload {
   path: string;
   slug: string;
 }
+
+export interface CheckStartedPayload {
+  workspace_id: string;
+  check_id: string;
+  command: string;
+}
+
+export interface CheckOutputPayload {
+  check_id: string;
+  stream: string;
+  line: string;
+}
+
+export interface CheckFinishedPayload {
+  check_id: string;
+  exit_code: number;
+  duration_ms: number;
+}

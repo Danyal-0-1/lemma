@@ -195,6 +195,75 @@ export async function revealWorkspace(workspaceId: string): Promise<string> {
   return ((await response.json()) as { result: string }).result;
 }
 
+// --- Diff / Files / Checks (the review loop, M6) ------------------------------
+
+/** One changed file in a workspace diff. */
+export interface DiffFile {
+  path: string;
+  additions: number;
+  deletions: number;
+  status: string;
+}
+
+/** Fetch the per-file changes since the last commit. */
+export async function getDiff(workspaceId: string): Promise<{ files: DiffFile[] }> {
+  const response = await fetch(`${BACKEND_ORIGIN}/api/workspaces/${workspaceId}/diff`);
+  if (!response.ok) throw new Error(`diff failed: ${response.status}`);
+  return (await response.json()) as { files: DiffFile[] };
+}
+
+/** Fetch one file's content — working tree, or the committed version (ref="head"). */
+export async function getFile(
+  workspaceId: string,
+  path: string,
+  ref: "working" | "head" = "working",
+): Promise<{ path: string; content: string }> {
+  const query = new URLSearchParams({ path, ref });
+  const response = await fetch(`${BACKEND_ORIGIN}/api/workspaces/${workspaceId}/file?${query}`);
+  if (!response.ok) throw new Error(`read file failed: ${response.status}`);
+  return (await response.json()) as { path: string; content: string };
+}
+
+/** Fetch the workspace's file list (for the Files tab). */
+export async function getFiles(workspaceId: string): Promise<string[]> {
+  const response = await fetch(`${BACKEND_ORIGIN}/api/workspaces/${workspaceId}/files`);
+  if (!response.ok) throw new Error(`list files failed: ${response.status}`);
+  return ((await response.json()) as { files: string[] }).files;
+}
+
+/** One saved verification command. */
+export interface Check {
+  id: string;
+  name: string;
+  command: string;
+}
+
+/** Fetch the workspace's saved checks. */
+export async function getChecks(workspaceId: string): Promise<Check[]> {
+  const response = await fetch(`${BACKEND_ORIGIN}/api/workspaces/${workspaceId}/checks`);
+  if (!response.ok) throw new Error(`get checks failed: ${response.status}`);
+  return ((await response.json()) as { checks: Check[] }).checks;
+}
+
+/** Persist the workspace's checks. */
+export async function putChecks(workspaceId: string, list: Check[]): Promise<void> {
+  const response = await fetch(`${BACKEND_ORIGIN}/api/workspaces/${workspaceId}/checks`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ checks: list }),
+  });
+  if (!response.ok) throw new Error(`save checks failed: ${response.status}`);
+}
+
+/** Run a saved check; its output streams over /ws (check_started/output/finished). */
+export async function runCheck(workspaceId: string, checkId: string): Promise<void> {
+  const response = await fetch(
+    `${BACKEND_ORIGIN}/api/workspaces/${workspaceId}/checks/${checkId}/run`,
+    { method: "POST" },
+  );
+  if (!response.ok) throw new Error(`run check failed: ${response.status}`);
+}
+
 /** Download a session (transcript + final Spec) as a markdown file (browser save). */
 export async function exportSession(sessionId: string): Promise<void> {
   const response = await fetch(`${BACKEND_ORIGIN}/api/sessions/${sessionId}/export`, {

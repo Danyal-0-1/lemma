@@ -34,7 +34,9 @@ from app.ideation.export import render_session_markdown
 from app.oneshot import run_oneshot
 from app.settings import get_settings
 from app.terminal.pty_service import connect_pty, create_terminal
-from app.workspaces import manager
+from app.workspaces import checks, manager
+from app.workspaces.diff import compute_diff
+from app.workspaces.files import list_files, read_file
 from app.ws import connect_websocket
 
 # The three decisions the founder can make at the approval gate.
@@ -327,3 +329,67 @@ async def pty_endpoint(websocket: WebSocket, terminal_id: str) -> None:
     stay off the event bus — see ARCHITECTURE.md.
     """
     await connect_pty(websocket, terminal_id)
+
+
+# ── Diff / Files / Checks (the review loop, M6) ──────────────────────────────
+
+
+async def _require_workspace_path(workspace_id: str) -> str:
+    """Return a workspace's directory path, or raise 404. Shared by the M6 routes."""
+    workspace = await asyncio.to_thread(manager.get_workspace, workspace_id)
+    if workspace is None:
+        raise HTTPException(status_code=404, detail="workspace not found")
+    return workspace.path
+
+
+@app.get("/api/workspaces/{workspace_id}/diff")
+async def get_diff(workspace_id: str) -> dict:
+    """Return the per-file changes since the last commit (for the Diff tab)."""
+    path = await _require_workspace_path(workspace_id)
+    return await asyncio.to_thread(compute_diff, path)
+
+
+@app.get("/api/workspaces/{workspace_id}/files")
+async def get_files(workspace_id: str) -> dict:
+    """Return the workspace's file list (for the read-only Files tab)."""
+    path = await _require_workspace_path(workspace_id)
+    return await asyncio.to_thread(list_files, path)
+
+
+@app.get("/api/workspaces/{workspace_id}/file")
+async def get_file(workspace_id: str, path: str, ref: str = "working") -> dict:
+    """Return one file's content — working tree, or the committed version (ref=head)."""
+    workspace_path = await _require_workspace_path(workspace_id)
+    try:
+        return await asyncio.to_thread(read_file, workspace_path, path, ref)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+class ChecksBody(BaseModel):
+    """Body for PUT /checks: the full list of saved checks to persist."""
+
+    checks: list[dict]
+
+
+@app.get("/api/workspaces/{workspace_id}/checks")
+async def get_checks(workspace_id: str) -> dict:
+    """Return the workspace's saved checks from aicompany.json."""
+    path = await _require_workspace_path(workspace_id)
+    return {"checks": await asyncio.to_thread(checks.read_checks, path)}
+
+
+@app.put("/api/workspaces/{workspace_id}/checks")
+async def put_checks(workspace_id: str, body: ChecksBody) -> dict:
+    """Save the workspace's checks to aicompany.json."""
+    path = await _require_workspace_path(workspace_id)
+    await asyncio.to_thread(checks.write_checks, path, body.checks)
+    return {"status": "saved"}
+
+
+@app.post("/api/workspaces/{workspace_id}/checks/{check_id}/run")
+async def run_check_route(workspace_id: str, check_id: str) -> dict:
+    """Run a saved check; its output streams over /ws (check_started/output/finished)."""
+    path = await _require_workspace_path(workspace_id)
+    asyncio.create_task(checks.run_check(workspace_id, path, check_id))
+    return {"status": "running"}

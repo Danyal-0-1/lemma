@@ -17,13 +17,24 @@ import { lazy, Suspense, useState } from "react";
 
 import { openInEditor, revealWorkspace } from "../../lib/api";
 import { useAppStore } from "../../store/appStore";
+import ChecksTab from "./ChecksTab";
+import DiffTab from "./DiffTab";
+import FilesTab from "./FilesTab";
 import SpecTab from "./SpecTab";
 
 // xterm.js is sizeable, so the terminal (and its dependency) loads only on entering
 // the build phase — the same lazy pattern as the Monaco raw view.
 const TerminalTab = lazy(() => import("./TerminalTab"));
 
-type BuildTab = "terminal" | "spec";
+// The build-phase review tabs (PROMPT.md §2). Diff is the default.
+type BuildTab = "diff" | "terminal" | "files" | "checks" | "spec";
+const BUILD_TABS: { id: BuildTab; label: string }[] = [
+  { id: "diff", label: "Diff" },
+  { id: "terminal", label: "Terminal" },
+  { id: "files", label: "Files" },
+  { id: "checks", label: "Checks" },
+  { id: "spec", label: "Spec" },
+];
 
 /** A single tab button in the review pane's tab bar. */
 function TabButton({
@@ -46,9 +57,9 @@ function TabButton({
   );
 }
 
-/** The build-phase view: workspace header + Terminal/Spec tabs. */
+/** The build-phase view: workspace header + review tabs. */
 function BuildPane({ workspaceId, slug }: { workspaceId: string; slug: string }) {
-  const [tab, setTab] = useState<BuildTab>("terminal");
+  const [tab, setTab] = useState<BuildTab>("diff");
 
   return (
     <section className="flex h-full flex-col bg-panel">
@@ -73,19 +84,24 @@ function BuildPane({ workspaceId, slug }: { workspaceId: string; slug: string })
         </div>
       </div>
 
-      {/* Tab bar (M5: Terminal, Spec). */}
+      {/* Tab bar. */}
       <div className="flex items-center gap-1 border-b border-line px-2 py-1.5">
-        <TabButton label="Terminal" active={tab === "terminal"} onClick={() => setTab("terminal")} />
-        <TabButton label="Spec" active={tab === "spec"} onClick={() => setTab("spec")} />
+        {BUILD_TABS.map(({ id, label }) => (
+          <TabButton key={id} label={label} active={tab === id} onClick={() => setTab(id)} />
+        ))}
       </div>
 
-      {/* Content. Terminal stays mounted (hidden when inactive) to keep the shell alive. */}
+      {/* Content. Terminal stays mounted (hidden when inactive) to keep the shell alive;
+          the other tabs mount on demand and get an `active` flag for their fetching. */}
       <div className="min-h-0 flex-1">
         <div className="h-full" style={{ display: tab === "terminal" ? "block" : "none" }}>
           <Suspense fallback={<p className="p-3 text-muted">Loading terminal…</p>}>
             <TerminalTab workspaceId={workspaceId} active={tab === "terminal"} />
           </Suspense>
         </div>
+        {tab === "diff" && <DiffTab workspaceId={workspaceId} active />}
+        {tab === "files" && <FilesTab workspaceId={workspaceId} active />}
+        {tab === "checks" && <ChecksTab workspaceId={workspaceId} active />}
         {tab === "spec" && <SpecTab />}
       </div>
     </section>

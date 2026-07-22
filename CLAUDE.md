@@ -31,8 +31,8 @@ we are. Keep it current — it is the contract every future session inherits.
 | M3 — Full crew + approval gate + Spec | ✅ done | see `git log` |
 | M4 — Spec tab + history + export | ✅ done | see `git log` |
 | M5 — Workspaces + Terminal | ✅ done | see `git log` |
-| M6 — Diff + Files + Checks | ⏳ next | — |
-| M7 — Explain (mentor) | ▫ todo | — |
+| M6 — Diff + Files + Checks | ✅ done | see `git log` |
+| M7 — Explain (mentor) | ⏳ next | — |
 | M8 — Polish + learning pass | ▫ todo | — |
 | M9 — Headless AgentProvider | ▫ optional | — |
 
@@ -146,6 +146,18 @@ outranks cleverness, brevity, and micro-performance. Concretely (PROMPT.md §1):
 - **Workspaces live OUTSIDE the repo** at `~/ai-company-workspaces/<slug>` (collision →
   `-slug-2`), git-inited with SPEC.md/spec.json/CLAUDE.md/aicompany.json. Directory is
   never deleted in v1. xterm loads lazily (build phase only), like Monaco.
+- **The sanitized env is now shared** (`app/shell_env.py::sanitized_env`) by BOTH the PTY
+  terminal and the Checks runner — one source of the key-stripping guarantee so they
+  can't drift. Checks also run with it.
+- **Diff = working tree vs HEAD** (`git diff HEAD --numstat`) plus untracked from
+  `git status --porcelain`. The Diff tab PULLS (Refresh + 5s poll only while visible),
+  publishes totals to `store.diffCounts` for the sidebar `+/−`; no `diff_updated` event.
+- **Checks:** commands in `aicompany.json`; run save-then-run (so the backend runs
+  exactly what's shown), one-at-a-time per workspace (asyncio.Lock), stderr merged into
+  stdout for ordered output; `check_started/output/finished` events → `store.checkRuns`
+  badges. `read_file` has a path-traversal guard (must resolve inside the workspace).
+- **Two git helpers** (`workspaces/gitutil.py`): `git_run` (must succeed) vs `git_output`
+  (read-only, ignores non-zero — a `git show HEAD:new_file` "failing" is normal).
 
 ---
 

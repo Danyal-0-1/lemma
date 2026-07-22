@@ -101,7 +101,7 @@ dev.
 
 ---
 
-## Current state (through M5)
+## Current state (through M6)
 
 - **M0:** the shell — FastAPI `GET /health` + the three-panel VS Code-dark layout.
 - **M1:** the event pipe — `events.py` (Event + EventBus + Sequencer) and `ws.py`
@@ -139,5 +139,12 @@ dev.
   xterm `TerminalTab` (lazy-loaded, stays mounted across tab switches), phase-aware
   build tabs, and Open-in-editor / Reveal.
 
-Diff/Files/Checks (M6) and Explain (M7) arrive next — all of them simply
-`event_bus.publish(...)` and lean on the provider layer.
+- **M6:** the review loop. `workspaces/diff.py` (changes vs HEAD + untracked),
+  `workspaces/files.py` (list/read with a path-traversal guard), `workspaces/checks.py`
+  (run saved commands with the shared sanitized env, one at a time, streaming
+  `check_*` events). `app/shell_env.py` now centralizes the key-stripping used by both
+  the terminal and checks. Frontend: DiffTab (poll-while-visible + Monaco diff + sidebar
+  +/− counts), read-only FilesTab, and ChecksTab (edit/save/run + green/red badges).
+
+Explain (M7) and the polish pass (M8) arrive next — the Explain mentor reuses the
+ModelProvider layer and streams into the Conversation like the crew does.

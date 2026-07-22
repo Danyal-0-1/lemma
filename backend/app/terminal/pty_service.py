@@ -8,10 +8,10 @@
 #   pumps bytes both ways between that shell and a WebSocket, and handles resize.
 #
 # ╔══════════════════════════════════════════════════════════════════════════════╗
-# ║  ⚠️  THE MOST EXPENSIVE BUG IN THIS APP — READ _sanitized_env() BELOW.        ║
-# ║  We STRIP ANTHROPIC_API_KEY / OPENAI_API_KEY before spawning the shell, so a  ║
-# ║  `claude` session you start here uses your SUBSCRIPTION, not per-token API    ║
-# ║  billing. If those keys leak into this shell, every keystroke can cost money. ║
+# ║  ⚠️  BILLING SAFETY: the env we spawn the shell with comes from               ║
+# ║  app/shell_env.py::sanitized_env(), which STRIPS ANTHROPIC_API_KEY /          ║
+# ║  OPENAI_API_KEY. That's what makes a `claude` session here use your           ║
+# ║  SUBSCRIPTION, not per-token API billing. Read that file.                     ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝
 #
 # WHY pty.fork (not a plain subprocess): a PTY makes the shell believe it's talking to
@@ -36,28 +36,12 @@ import time
 from fastapi import WebSocket
 from starlette.websockets import WebSocketDisconnect, WebSocketState
 
+from app.shell_env import sanitized_env
+
 logger = logging.getLogger("aicompany.pty")
 
 # Registry of live terminals so a /pty socket can find its shell by id.
 _terminals: dict[str, PtyTerminal] = {}
-
-
-def _sanitized_env(workspace_path: str) -> dict[str, str]:
-    """Return an environment copy SAFE to hand to the embedded shell.
-
-    ⚠️ CRITICAL (billing): we delete ANTHROPIC_API_KEY and OPENAI_API_KEY so that an
-    interactive `claude`/`codex` started in this terminal falls back to the user's
-    SUBSCRIPTION instead of silently switching to metered per-token API billing. This
-    is defensive: even if the user exported those keys in their shell (which the README
-    warns against), the shell we spawn here won't see them.
-    """
-    env = os.environ.copy()
-    env.pop("ANTHROPIC_API_KEY", None)
-    env.pop("OPENAI_API_KEY", None)
-    # Give the shell a sensible terminal type and location.
-    env.setdefault("TERM", "xterm-256color")
-    env["PWD"] = workspace_path
-    return env
 
 
 def _set_winsize(fd: int, rows: int, cols: int) -> None:
@@ -123,7 +107,7 @@ def create_terminal(workspace_path: str) -> str:
     """
     terminal_id = f"pty_{os.urandom(4).hex()}"
     shell = os.environ.get("SHELL", "/bin/bash")
-    env = _sanitized_env(workspace_path)
+    env = sanitized_env(workspace_path)  # ⚠️ strips API keys — see app/shell_env.py
 
     # pty.fork() forks; in the CHILD it wires stdio to the PTY and returns pid 0.
     pid, master_fd = pty.fork()

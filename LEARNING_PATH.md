@@ -270,4 +270,41 @@ slowly and make sure you can explain `_sanitized_env` and `close()`.
 
 ---
 
-*(M6 and beyond are appended as each milestone lands.)*
+## M6 — Diff + Files + Checks
+
+**What this milestone teaches:** the review loop — how the app shows you what changed
+(diff), lets you browse the project (files), and proves it works (checks). It's mostly
+"call git and a subprocess, stream the result to the UI", with a shared safety guarantee.
+
+**Read in this order:**
+
+1. [`backend/app/shell_env.py`](backend/app/shell_env.py) — the ONE key-stripping
+   function, now shared by the terminal and checks. Read the banner.
+2. [`backend/app/workspaces/gitutil.py`](backend/app/workspaces/gitutil.py) — the "must
+   succeed" vs "failure is fine" git split.
+3. [`backend/app/workspaces/diff.py`](backend/app/workspaces/diff.py) — tracked changes
+   vs HEAD + untracked files.
+4. [`backend/app/workspaces/checks.py`](backend/app/workspaces/checks.py) — stream a
+   subprocess's output; a lock so one runs at a time. Teaches:
+   `asyncio.create_subprocess_shell` + streaming.
+5. [`frontend/src/panels/rightpane/DiffTab.tsx`](frontend/src/panels/rightpane/DiffTab.tsx)
+   — poll-while-visible, per-file list, Monaco diff.
+6. [`frontend/src/panels/rightpane/ChecksTab.tsx`](frontend/src/panels/rightpane/ChecksTab.tsx)
+   — edit-in-place commands, save-then-run, badges from streamed events.
+
+**RETYPE THIS → [`backend/app/workspaces/checks.py`](backend/app/workspaces/checks.py).**
+It's the clearest example in the app of running a real command and streaming its output
+line by line — a pattern you'll reuse constantly.
+
+**Exercises:**
+
+1. In the terminal, `echo hi > x.txt`, then open the Diff tab (don't touch Refresh).
+   Predict how long until it appears (hint: the 5s poll). Time it.
+2. Add a check with command `sleep 2 && echo done`, run it, and immediately run it again.
+   Predict what happens (hint: the per-workspace lock). Watch the badges.
+3. In `diff.py`, change `git diff HEAD` to `git diff` (drops the HEAD). Predict what the
+   Diff tab shows after you *stage* a change (`git add`) in the terminal. Try it.
+
+---
+
+*(M7 and beyond are appended as each milestone lands.)*
