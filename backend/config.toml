@@ -1,0 +1,33 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# config.toml — non-secret, editable settings for the ideation crew.
+# READING ORDER: backend #3
+#
+# WHY separate from .env: .env holds SECRETS (keys) and machine-specific paths.
+# This file holds shareable, tweakable CHOICES — which model each role uses, the
+# spending budget, and the per-model prices the cost meter uses. It IS committed
+# to git (there's nothing secret here), so the whole team sees the same defaults.
+#
+# It is parsed with Python's stdlib `tomllib` in settings.py (M2). Model IDs are
+# LiteLLM strings — verify them against the provider's docs before trusting them.
+# ─────────────────────────────────────────────────────────────────────────────
+
+[roles]
+# Which model plays each role in the ideation crew. All DeepSeek by default because
+# it is cheap; upgrade `pm` / `explain` to an Anthropic or OpenAI model once you have
+# that key and want higher-quality synthesis.
+generator  = "deepseek/deepseek-chat"
+researcher = "deepseek/deepseek-chat"
+critic     = "deepseek/deepseek-reasoner"
+pm         = "deepseek/deepseek-chat"
+explain    = "deepseek/deepseek-chat"
+
+[budget]
+# Safety rails so a runaway crew can't quietly spend a fortune.
+max_session_tokens = 200000   # hard stop for one ideation session; emits budget_exceeded
+max_rounds = 3                # how many debate→feedback rounds before pausing at the gate
+
+[pricing]
+# USD per 1,000,000 tokens, used ONLY to estimate the cost meter — edit to match your
+# provider's current rates. Keys are the same LiteLLM model strings used above.
+"deepseek/deepseek-chat"     = { input = 0.28, output = 0.42 }
+"deepseek/deepseek-reasoner" = { input = 0.28, output = 0.42 }

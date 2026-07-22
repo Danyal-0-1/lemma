@@ -1,0 +1,54 @@
+/* ─────────────────────────────────────────────────────────────────────────────
+   theme.css — the VS Code Dark+ palette + global base styles.
+   READING ORDER: frontend #6
+   (teaches: CSS custom properties as a single source of truth for the theme)
+
+   The three @tailwind lines below are placeholders that Tailwind replaces at build
+   time with its base reset, component classes, and utility classes.
+   ─────────────────────────────────────────────────────────────────────────────*/
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* The palette. Every color the app uses is defined ONCE here as a CSS variable, then
+   referenced from tailwind.config.js. Change a value here → it changes everywhere.
+   Hex values are the exact VS Code Dark+ tokens from PROMPT.md §12. */
+:root {
+  --color-bg: #1e1e1e; /* main background */
+  --color-sidebar: #252526; /* sidebar / panel headers */
+  --color-line: #3c3c3c; /* 1px borders between panels */
+  --color-fg: #cccccc; /* primary text */
+  --color-muted: #8c8c8c; /* dim / secondary text */
+  --color-accent: #0e639c; /* primary buttons */
+  --color-accent-hover: #1177bb;
+  --color-ok: #89d185; /* success / pass */
+  --color-warn: #cca700; /* warnings */
+  --color-err: #f48771; /* errors / fail */
+
+  /* Per-role speaker colors for the crew Conversation. */
+  --role-generator: #4fc1ff;
+  --role-researcher: #dcdcaa;
+  --role-critic: #f48771;
+  --role-pm: #c586c0;
+  --role-mentor: #89d185;
+}
+
+/* Fill the whole viewport and hand sizing down to the React tree. */
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--color-bg);
+  color: var(--color-fg);
+  /* 13px UI font, matching a dense, tool-like editor feel (not a marketing site). */
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-size: 13px;
+  line-height: 1.5;
+  /* Crisper text on dark backgrounds. */
+  -webkit-font-smoothing: antialiased;
+}

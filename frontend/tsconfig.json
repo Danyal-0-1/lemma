@@ -1,0 +1,27 @@
+// READING ORDER: frontend #3 — TypeScript rules. strict:true is non-negotiable here.
+// (tsconfig.json supports // comments — this is "JSONC".)
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "useDefineForClassFields": true,
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+
+    // strict:true is the whole point — catch type mistakes before the browser does.
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+
+    // Vite bundles the code, so tsc only type-checks (noEmit) and trusts Vite for imports.
+    "isolatedModules": true,
+    "moduleDetection": "force",
+    "resolveJsonModule": true,
+    "allowImportingTsExtensions": true,
+    "noEmit": true,
+    "skipLibCheck": true
+  },
+  "include": ["src"]
+}

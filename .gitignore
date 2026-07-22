@@ -1,0 +1,38 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# .gitignore — what must never enter version control.
+# READING ORDER: 3 (skim after PROMPT.md and README.md)
+#
+# WHY this file matters for a learning codebase:
+#   The single most dangerous thing you can commit is a secret (an API key).
+#   This app also generates local state (a SQLite DB, model workspaces) that is
+#   personal to your machine and would only create noise or conflicts in git.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# --- Secrets: NEVER commit real keys. Only .env.example (with blank values) is tracked.
+.env
+.env.*
+!.env.example
+
+# --- Backend local state (recreated on demand; see db.py). Not shared between machines.
+backend/data/
+backend/**/__pycache__/
+backend/**/*.pyc
+.pytest_cache/
+.ruff_cache/
+.venv/
+backend/.venv/
+
+# --- Frontend build + dependency artifacts (reproducible from package.json).
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# --- The user's retyping scratch space (Section 1, rule 8). Personal, not shared.
+learning/retyped/*
+!learning/retyped/.gitkeep
+
+# --- OS / editor cruft.
+.DS_Store
+*.swp
+.idea/
+.vscode/

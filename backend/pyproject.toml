@@ -1,0 +1,53 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# pyproject.toml — the backend's identity: its dependencies and tool config.
+# READING ORDER: backend #1
+#
+# WHY this file: it is the single source of truth for what Python packages the
+# backend needs. `uv sync` reads it, resolves exact versions into uv.lock, and
+# builds an isolated virtualenv. You never `pip install` by hand.
+#
+# We add dependencies milestone by milestone (not all up front) so that each new
+# package shows up alongside the feature that needs it — easier to learn from.
+# ─────────────────────────────────────────────────────────────────────────────
+
+[project]
+name = "ai-company-backend"
+version = "0.1.0"
+description = "Local-first AI ideation + build orchestration shell (backend)."
+requires-python = ">=3.12"
+
+# Runtime dependencies present as of M0. More arrive later:
+#   litellm            → M2 (ModelProvider)
+#   sqlmodel           → M3 (persistence)
+dependencies = [
+    "fastapi>=0.115",         # the web framework: routes, WebSockets, validation
+    "uvicorn[standard]>=0.30", # the ASGI server that actually runs FastAPI
+    "pydantic>=2.7",          # data models / validation (v2)
+    "pydantic-settings>=2.3", # typed configuration from environment variables
+    "python-dotenv>=1.0",     # load backend/.env into the process (only this process)
+]
+
+# Development-only dependencies: test runner, async test support, linter, and the
+# HTTP client FastAPI's TestClient uses under the hood.
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.6",
+    "httpx>=0.27",
+]
+
+# --- ruff: our linter. Kept intentionally simple and explained. --------------
+[tool.ruff]
+line-length = 100          # a touch wider than default; comments in this codebase run long
+target-version = "py312"
+
+[tool.ruff.lint]
+# E,F = pyflakes/pycodestyle (real errors + style), I = import sorting, UP = modern syntax.
+select = ["E", "F", "I", "UP"]
+
+# --- pytest ------------------------------------------------------------------
+[tool.pytest.ini_options]
+# asyncio_mode = "auto" lets us write `async def test_...` without a decorator on each.
+asyncio_mode = "auto"
+testpaths = ["app/tests"]
