@@ -53,6 +53,15 @@ export interface WorkspaceInfo {
   slug: string;
 }
 
+/** The review tabs available in the build phase. */
+export type BuildTab = "diff" | "terminal" | "files" | "checks" | "spec";
+
+/** A transient error notification shown top-right. */
+export interface Toast {
+  id: string;
+  message: string;
+}
+
 /** One bubble in the Conversation: a single crew (or mentor) turn. */
 export interface Turn {
   id: string;
@@ -107,6 +116,10 @@ interface AppState {
   checkRuns: Record<string, CheckRun>;
   // What the active review tab is showing, attached to mentor questions as context.
   mentorContext: { label: string; content: string } | null;
+  // Which build-phase review tab is showing (lifted here so shortcuts can switch it).
+  buildTab: BuildTab;
+  // Transient error notifications (top-right toasts).
+  toasts: Toast[];
 
   // --- actions ---
   setStatus: (status: ConnectionStatus) => void;
@@ -114,7 +127,12 @@ interface AppState {
   setSessionId: (id: string | null) => void;
   setDiffCounts: (counts: { additions: number; deletions: number } | null) => void;
   setMentorContext: (context: { label: string; content: string } | null) => void;
+  setBuildTab: (tab: BuildTab) => void;
   addUserTurn: (text: string) => void;
+  pushToast: (message: string) => void;
+  dismissToast: (id: string) => void;
+  newSession: () => void;
+  exitWorkspace: () => void;
   clearConversation: () => void;
   restoreSession: (payload: RestorePayload) => void;
   activateWorkspace: (workspace: WorkspaceInfo) => void;
@@ -136,16 +154,41 @@ export const useAppStore = create<AppState>((set) => ({
   diffCounts: null,
   checkRuns: {},
   mentorContext: null,
+  buildTab: "diff",
+  toasts: [],
 
   setStatus: (status) => set({ status }),
   setMock: (mock) => set({ mock }),
   setSessionId: (id) => set({ sessionId: id }),
   setDiffCounts: (counts) => set({ diffCounts: counts }),
   setMentorContext: (context) => set({ mentorContext: context }),
+  setBuildTab: (tab) => set({ buildTab: tab }),
   addUserTurn: (text) => set((state) => ({ turns: appendTurn(state.turns, "user", text) })),
+  pushToast: (message) =>
+    set((state) => ({ toasts: [...state.toasts, { id: crypto.randomUUID(), message }] })),
+  dismissToast: (id) => set((state) => ({ toasts: state.toasts.filter((t) => t.id !== id) })),
+  // Cmd/Ctrl+N — drop everything back to a fresh idle state ready for a new seed.
+  newSession: () =>
+    set({
+      turns: [],
+      cost: EMPTY_COST,
+      awaitingApproval: null,
+      artifacts: [],
+      sessionId: null,
+      activeWorkspace: null,
+      phase: "idle",
+    }),
+  // Leave the build phase (e.g. after archiving the active workspace).
+  exitWorkspace: () => set({ activeWorkspace: null, phase: "idle" }),
   activateWorkspace: (workspace) =>
     // Switching workspaces resets the review state so we don't show stale diff/checks.
-    set({ activeWorkspace: workspace, phase: "build", diffCounts: null, checkRuns: {} }),
+    set({
+      activeWorkspace: workspace,
+      phase: "build",
+      buildTab: "diff",
+      diffCounts: null,
+      checkRuns: {},
+    }),
   clearConversation: () =>
     set({ turns: [], cost: EMPTY_COST, awaitingApproval: null, artifacts: [], sessionId: null }),
 
@@ -295,7 +338,11 @@ export const useAppStore = create<AppState>((set) => ({
 
         case "error": {
           const p = event.payload as unknown as ErrorPayload;
-          return { turns: appendTurn(state.turns, "system", `⚠️ ${p.message}`) };
+          // Errors go both to the feed (a system bubble) and a transient toast (§7).
+          return {
+            turns: appendTurn(state.turns, "system", `⚠️ ${p.message}`),
+            toasts: [...state.toasts, { id: crypto.randomUUID(), message: p.message }],
+          };
         }
 
         case "budget_exceeded": {

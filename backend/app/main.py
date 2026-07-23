@@ -312,6 +312,26 @@ async def reveal_workspace(workspace_id: str) -> dict[str, str]:
     return {"result": result}
 
 
+@app.post("/api/workspaces/{workspace_id}/archive")
+async def archive_workspace(workspace_id: str) -> dict[str, str]:
+    """Archive a workspace (moves it to History). The directory is kept on disk."""
+    workspace = await asyncio.to_thread(manager.set_workspace_status, workspace_id, "archived")
+    if workspace is None:
+        raise HTTPException(status_code=404, detail="workspace not found")
+    event_bus.publish("workspace_archived", {"workspace_id": workspace_id})
+    return {"status": "archived"}
+
+
+@app.post("/api/workspaces/{workspace_id}/restore")
+async def restore_workspace(workspace_id: str) -> dict[str, str]:
+    """Restore an archived workspace back to the active list."""
+    workspace = await asyncio.to_thread(manager.set_workspace_status, workspace_id, "active")
+    if workspace is None:
+        raise HTTPException(status_code=404, detail="workspace not found")
+    event_bus.publish("workspace_restored", {"workspace_id": workspace_id})
+    return {"status": "active"}
+
+
 @app.post("/api/terminals")
 async def create_terminal_route(request: TerminalRequest) -> dict[str, str]:
     """Spawn a shell in a workspace and return the terminal id to connect /pty to."""

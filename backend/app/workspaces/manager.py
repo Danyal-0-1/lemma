@@ -136,6 +136,23 @@ def get_workspace(workspace_id: str) -> Workspace | None:
         return db.get(Workspace, workspace_id)
 
 
+def set_workspace_status(workspace_id: str, status: str) -> Workspace | None:
+    """Flip a workspace's status (active ⇄ archived). The directory is NEVER deleted.
+
+    Exists so archiving just hides a workspace from the main list (moving it to History);
+    the files stay on disk so a restore reopens exactly where you left off.
+    """
+    with get_session() as db:
+        workspace = db.get(Workspace, workspace_id)
+        if workspace is None:
+            return None
+        workspace.status = status
+        db.add(workspace)
+        db.commit()
+        db.refresh(workspace)
+        return workspace
+
+
 def open_in_editor(path: str) -> str:
     """Open `path` in the user's editor (or fall back to Reveal). Returns what happened.
 

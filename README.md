@@ -22,8 +22,9 @@ this app orchestrates and reviews.
 Built milestone by milestone (see [`PROMPT.md`](PROMPT.md) §14). Current progress lives
 in [`CLAUDE.md`](CLAUDE.md) under *Milestone status*, and in `git log --oneline`.
 
-- **M0 — Scaffold** ✅ repo layout, dev tooling, empty FastAPI `/health`, dark UI shell.
-- M1–M8: in progress / upcoming.
+**M0–M8 complete.** Phase 0 (ideation crew → approved Spec) and Phase 1 (workspace →
+terminal → diff/checks → mentor) both work end to end, and the whole app is demoable in
+mock mode with no keys and no cost.
 
 ---
 
@@ -64,6 +65,33 @@ Then open **http://localhost:5173**.
 
 ---
 
+## First-run walkthrough (mock mode, ~2 minutes)
+
+1. **Start an ideation session.** In the center composer, type an idea (e.g. *"a tool to
+   plan weekly meals"*) and press **Enter**. Four AI roles — Generator, Researcher,
+   Critic, PM — debate it, streaming into the conversation.
+2. **Approve the Spec.** When the crew pauses, the approval bar appears. Click **Request
+   changes**, type feedback, and watch it run another round — or click **Approve**. The
+   right pane's **Spec** tab shows every version (and the idea's evolution).
+3. **Create a workspace.** In the Spec tab, click **Create workspace**. The app makes a
+   real git repo under `~/ai-company-workspaces/<slug>` and switches to the build phase.
+4. **Use the terminal.** The **Terminal** tab is a real shell inside the workspace. Try
+   `echo $ANTHROPIC_API_KEY` — it's **empty** (the app strips it, so an interactive
+   `claude` here uses your subscription). Create a file: `echo hi > notes.txt`.
+5. **Review the diff.** Open the **Diff** tab — your new file shows with `+/−` counts
+   (also on the sidebar). Click it for a Monaco diff.
+6. **Run a check.** In the **Checks** tab, click **+ Add**, set the command to `echo ok`,
+   and **Run** → green ✓. Try `exit 1` → red ✗.
+7. **Ask the mentor.** Select some code in Diff/Files and click **Explain this**, or ask
+   *"what does this diff do?"* in the composer. The mentor answers in the conversation.
+8. **Archive when done.** Hover a workspace in the sidebar and click **archive** — it
+   moves to **History**, where you can **restore** it later.
+
+Keyboard: **Cmd/Ctrl+N** new session; in build, **Cmd/Ctrl+Shift+D / T / C** jump to
+Diff / Terminal / Checks.
+
+---
+
 ## Using real models (optional)
 
 1. Get a [DeepSeek](https://platform.deepseek.com/) API key (cheapest; the crew's default).
@@ -85,7 +113,8 @@ Claude Code or this app.** If that variable is set, the `claude` CLI bills your
   spawns the embedded terminal — so a `claude` session you start there uses your
   subscription, not metered API billing.
 
-This is enforced in `backend/app/terminal/pty_service.py` (arriving in M5).
+This is enforced in `backend/app/terminal/pty_service.py` (and `backend/app/shell_env.py`,
+which the Checks runner shares).
 
 ---
 
@@ -100,10 +129,22 @@ other host unless you explicitly set `I_UNDERSTAND_THE_RISK=true`.
 ## Troubleshooting
 
 - **Port already in use** — a previous `make dev` didn't shut down. Find and kill it:
-  `lsof -i :8000` / `lsof -i :5173`, then `kill <pid>`.
-- **PTY issues on macOS** (M5+) — covered here once the terminal ships.
-- **WebSocket won't connect** — check that the backend is up (`curl http://127.0.0.1:8000/health`)
-  and that no proxy/VPN is blocking `ws://localhost`.
+  `lsof -ti :8000 | xargs kill` (and `:5173`).
+- **`uv: command not found`** — the installer put it in `~/.local/bin`. Restart your
+  shell, or `source $HOME/.local/bin/env`.
+- **The terminal is blank / doesn't respond** — make sure the backend is running; the
+  terminal talks to it over `ws://127.0.0.1:8000/pty/...`. On **macOS**, if a shell
+  seems to hang, it's usually a leftover process — the PTY reaps children on disconnect
+  (`pty_service.py`), so just close and reopen the Terminal tab.
+- **WebSocket won't connect** — confirm the backend is up
+  (`curl http://127.0.0.1:8000/health`) and that no proxy/VPN blocks `ws://localhost`.
+  The status-bar dot shows amber while reconnecting, green when connected.
+- **The `[vite] failed to connect to websocket` console error** is Vite's own dev-server
+  HMR socket, not this app — harmless.
+- **Real models fail with a 401/auth error** — you set `MOCK_LLM=false` without a valid
+  key for the model in `config.toml`. Add the key to `backend/.env` or set `MOCK_LLM=true`.
+- **Reset local state** — delete `backend/data/app.db` (recreated on next start) to clear
+  sessions/workspaces; delete `~/ai-company-workspaces/` to remove the project folders.
 
 ---
 

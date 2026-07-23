@@ -13,10 +13,10 @@
 // No build tabs exist until a workspace does.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { lazy, Suspense, useState } from "react";
+import { lazy, Suspense } from "react";
 
 import { openInEditor, revealWorkspace } from "../../lib/api";
-import { useAppStore } from "../../store/appStore";
+import { type BuildTab, useAppStore } from "../../store/appStore";
 import ChecksTab from "./ChecksTab";
 import DiffTab from "./DiffTab";
 import FilesTab from "./FilesTab";
@@ -27,7 +27,6 @@ import SpecTab from "./SpecTab";
 const TerminalTab = lazy(() => import("./TerminalTab"));
 
 // The build-phase review tabs (PROMPT.md §2). Diff is the default.
-type BuildTab = "diff" | "terminal" | "files" | "checks" | "spec";
 const BUILD_TABS: { id: BuildTab; label: string }[] = [
   { id: "diff", label: "Diff" },
   { id: "terminal", label: "Terminal" },
@@ -59,7 +58,9 @@ function TabButton({
 
 /** The build-phase view: workspace header + review tabs. */
 function BuildPane({ workspaceId, slug }: { workspaceId: string; slug: string }) {
-  const [tab, setTab] = useState<BuildTab>("diff");
+  // Lifted into the store so keyboard shortcuts (Cmd/Ctrl+Shift+D/T/C) can switch tabs.
+  const tab = useAppStore((s) => s.buildTab);
+  const setTab = useAppStore((s) => s.setBuildTab);
 
   return (
     <section className="flex h-full flex-col bg-panel">

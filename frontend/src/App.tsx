@@ -22,6 +22,7 @@ import Conversation from "./panels/Conversation";
 import RightPane from "./panels/rightpane/RightPane";
 import Sidebar from "./panels/Sidebar";
 import StatusBar from "./panels/StatusBar";
+import Toasts from "./panels/Toasts";
 import { useAppStore } from "./store/appStore";
 
 /** A thin draggable divider between two panels. */
@@ -53,8 +54,33 @@ export default function App() {
       });
   }, []);
 
+  // Keyboard shortcuts (PROMPT.md §12). Cmd (mac) or Ctrl (elsewhere) is the modifier.
+  useEffect(() => {
+    function onKey(event: KeyboardEvent) {
+      if (!event.metaKey && !event.ctrlKey) return;
+      const store = useAppStore.getState();
+      const key = event.key.toLowerCase();
+      if (key === "n" && !event.shiftKey) {
+        event.preventDefault();
+        store.newSession();
+      } else if (event.shiftKey && key === "d") {
+        event.preventDefault();
+        store.setBuildTab("diff");
+      } else if (event.shiftKey && key === "t") {
+        event.preventDefault();
+        store.setBuildTab("terminal");
+      } else if (event.shiftKey && key === "c") {
+        event.preventDefault();
+        store.setBuildTab("checks");
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
   return (
     <div className="flex h-full flex-col">
+      <Toasts />
       {/* Slim title bar. */}
       <header className="flex h-9 flex-none items-center border-b border-line bg-sidebar px-3 font-semibold text-fg">
         AI Company

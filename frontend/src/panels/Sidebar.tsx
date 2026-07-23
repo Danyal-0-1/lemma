@@ -1,28 +1,28 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// Sidebar.tsx — the left panel: Sessions (from the DB) + Workspaces + History.
+// Sidebar.tsx — the left panel: Sessions, Workspaces, and History (archived).
 // READING ORDER: frontend #13
 //
-// WHAT IT DOES (M4): lists past ideation sessions loaded from the backend, each a
-// one-line row with a status dot. Clicking a row restores that session (its
-// transcript + artifacts) into the UI, read-only. It refreshes whenever a session
-// finishes (the phase returns to idle).
-//
-// WHY one line per row: PROMPT.md §12 rule 4 — flat, predictable, no nested trees.
+// WHAT IT DOES: lists past ideation sessions and build workspaces (loaded from the
+// backend). Active workspaces sit under "Workspaces"; archived ones collapse into
+// "History" and can be restored. Rows are one line with a status dot (PROMPT.md §12).
+// Clicking a session restores it; clicking a workspace re-enters the build phase.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import {
+  archiveWorkspace,
   getSession,
   getSessions,
   getWorkspaces,
+  restoreWorkspace,
   type SessionSummary,
   type WorkspaceSummary,
 } from "../lib/api";
 import type { RestorePayload } from "../store/appStore";
 import { useAppStore } from "../store/appStore";
 
-// Status → dot color. Approved is green; in-flight is amber; ended-without-approval dim.
+// Status → dot color.
 const STATUS_DOT: Record<string, string> = {
   approved: "bg-ok",
   running: "bg-warn",
@@ -51,106 +51,142 @@ export default function Sidebar() {
   const diffCounts = useAppStore((s) => s.diffCounts);
   const restoreSession = useAppStore((s) => s.restoreSession);
   const activateWorkspace = useAppStore((s) => s.activateWorkspace);
-  const clearConversation = useAppStore((s) => s.clearConversation);
+  const exitWorkspace = useAppStore((s) => s.exitWorkspace);
+  const newSession = useAppStore((s) => s.newSession);
 
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [workspaces, setWorkspaces] = useState<WorkspaceSummary[]>([]);
+  const [historyOpen, setHistoryOpen] = useState(false);
 
-  // Refresh the lists on mount and whenever the phase changes (e.g. a session finished
-  // or a workspace was just created).
-  useEffect(() => {
+  const refreshWorkspaces = useCallback(() => {
     getWorkspaces()
       .then(setWorkspaces)
       .catch(() => {});
+  }, []);
+
+  // Refresh the lists on mount and whenever the phase changes.
+  useEffect(() => {
+    refreshWorkspaces();
     if (phase === "idle") {
       getSessions()
         .then(setSessions)
-        .catch(() => {
-          // A failed fetch just leaves the list as-is; the status dot shows the outage.
-        });
+        .catch(() => {});
     }
-  }, [phase]);
+  }, [phase, refreshWorkspaces]);
 
-  async function handleOpen(id: string) {
-    const payload = (await getSession(id)) as RestorePayload;
-    restoreSession(payload);
+  async function openSession(id: string) {
+    restoreSession((await getSession(id)) as RestorePayload);
   }
 
+  async function archive(id: string) {
+    await archiveWorkspace(id);
+    if (id === activeWorkspace?.id) exitWorkspace(); // close the build pane if it was open
+    refreshWorkspaces();
+  }
+
+  async function restore(id: string) {
+    await restoreWorkspace(id);
+    refreshWorkspaces();
+  }
+
+  const active = workspaces.filter((w) => w.status === "active");
+  const archived = workspaces.filter((w) => w.status === "archived");
+
   return (
-    <aside className="flex h-full flex-col bg-sidebar">
+    <aside className="flex h-full flex-col overflow-y-auto bg-sidebar">
+      {/* Sessions */}
       <SectionLabel label="Sessions" />
       {sessions.length === 0 ? (
         <p className="px-3 pb-2 text-muted">No ideation sessions yet.</p>
       ) : (
-        <div className="flex flex-col">
-          {sessions.map((session) => (
-            <button
-              key={session.id}
-              type="button"
-              onClick={() => handleOpen(session.id)}
-              title={`${session.title} — ${session.status}`}
-              className={`flex items-center gap-2 px-3 py-1.5 text-left hover:bg-line ${
-                session.id === currentSessionId ? "bg-line" : ""
-              }`}
-            >
-              <span
-                className={`h-2 w-2 flex-none rounded-full ${STATUS_DOT[session.status] ?? "bg-muted"}`}
-              />
-              <span className="truncate text-fg">{session.title}</span>
-            </button>
-          ))}
-        </div>
+        sessions.map((session) => (
+          <button
+            key={session.id}
+            type="button"
+            onClick={() => void openSession(session.id)}
+            title={`${session.title} — ${session.status}`}
+            className={`flex items-center gap-2 px-3 py-1.5 text-left hover:bg-line ${
+              session.id === currentSessionId ? "bg-line" : ""
+            }`}
+          >
+            <span className={`h-2 w-2 flex-none rounded-full ${STATUS_DOT[session.status] ?? "bg-muted"}`} />
+            <span className="truncate text-fg">{session.title}</span>
+          </button>
+        ))
       )}
-
       <button
         type="button"
-        onClick={clearConversation}
+        onClick={newSession}
         className="mx-3 my-2 rounded bg-accent px-3 py-1.5 text-left text-white hover:bg-accent-hover"
       >
         + New session
       </button>
 
+      {/* Workspaces (active) */}
       <SectionLabel label="Workspaces" />
-      {workspaces.length === 0 ? (
+      {active.length === 0 ? (
         <p className="px-3 pb-2 text-muted">No workspaces yet.</p>
       ) : (
-        <div className="flex flex-col">
-          {workspaces.map((workspace) => (
+        active.map((workspace) => (
+          <div
+            key={workspace.id}
+            className={`flex items-center gap-2 px-3 py-1.5 hover:bg-line ${
+              workspace.id === activeWorkspace?.id ? "bg-line" : ""
+            }`}
+          >
             <button
-              key={workspace.id}
               type="button"
               onClick={() =>
-                activateWorkspace({
-                  id: workspace.id,
-                  path: workspace.path,
-                  slug: workspace.slug,
-                })
+                activateWorkspace({ id: workspace.id, path: workspace.path, slug: workspace.slug })
               }
-              title={`${workspace.slug} — ${workspace.status}`}
-              className={`flex items-center gap-2 px-3 py-1.5 text-left hover:bg-line ${
-                workspace.id === activeWorkspace?.id ? "bg-line" : ""
-              }`}
+              className="flex flex-1 items-center gap-2 truncate text-left"
             >
-              <span
-                className={`h-2 w-2 flex-none rounded-full ${STATUS_DOT[workspace.status] ?? "bg-muted"}`}
-              />
+              <span className={`h-2 w-2 flex-none rounded-full ${STATUS_DOT[workspace.status]}`} />
               <span className="flex-1 truncate text-fg">{workspace.slug}</span>
-              {/* Conductor-style +/- counts on the active workspace when it's dirty. */}
-              {workspace.id === activeWorkspace?.id && diffCounts && diffCounts.additions + diffCounts.deletions > 0 && (
+            </button>
+            {workspace.id === activeWorkspace?.id &&
+              diffCounts &&
+              diffCounts.additions + diffCounts.deletions > 0 && (
                 <span className="flex-none font-mono text-[11px]">
                   <span className="text-ok">+{diffCounts.additions}</span>{" "}
                   <span className="text-err">−{diffCounts.deletions}</span>
                 </span>
               )}
+            <button
+              type="button"
+              onClick={() => void archive(workspace.id)}
+              title="Archive"
+              className="flex-none text-[11px] text-muted hover:text-fg"
+            >
+              archive
             </button>
-          ))}
-        </div>
+          </div>
+        ))
       )}
 
-      {/* Archived items collapse into History (M8). Shown here so the shape is visible. */}
-      <div className="mt-auto border-t border-line px-3 py-2 text-[11px] text-muted">
-        History (empty)
-      </div>
+      {/* History (archived, collapsed) */}
+      <button
+        type="button"
+        onClick={() => setHistoryOpen((open) => !open)}
+        className="mt-auto flex items-center gap-1 border-t border-line px-3 py-2 text-[11px] uppercase text-muted hover:text-fg"
+      >
+        {historyOpen ? "▾" : "▸"} History ({archived.length})
+      </button>
+      {historyOpen &&
+        archived.map((workspace) => (
+          <div key={workspace.id} className="flex items-center gap-2 px-3 py-1.5 hover:bg-line">
+            <span className="h-2 w-2 flex-none rounded-full bg-muted" />
+            <span className="flex-1 truncate text-muted">{workspace.slug}</span>
+            <button
+              type="button"
+              onClick={() => void restore(workspace.id)}
+              title="Restore"
+              className="flex-none text-[11px] text-muted hover:text-ok"
+            >
+              restore
+            </button>
+          </div>
+        ))}
     </aside>
   );
 }

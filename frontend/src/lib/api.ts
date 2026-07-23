@@ -184,6 +184,22 @@ export async function openInEditor(workspaceId: string): Promise<string> {
   return ((await response.json()) as { result: string }).result;
 }
 
+/** Archive a workspace (moves it to History; the directory is kept). */
+export async function archiveWorkspace(workspaceId: string): Promise<void> {
+  const response = await fetch(`${BACKEND_ORIGIN}/api/workspaces/${workspaceId}/archive`, {
+    method: "POST",
+  });
+  if (!response.ok) throw new Error(`archive failed: ${response.status}`);
+}
+
+/** Restore an archived workspace back to the active list. */
+export async function restoreWorkspace(workspaceId: string): Promise<void> {
+  const response = await fetch(`${BACKEND_ORIGIN}/api/workspaces/${workspaceId}/restore`, {
+    method: "POST",
+  });
+  if (!response.ok) throw new Error(`restore failed: ${response.status}`);
+}
+
 /** Ask the backend to reveal a workspace in the OS file manager. */
 export async function revealWorkspace(workspaceId: string): Promise<string> {
   const response = await fetch(`${BACKEND_ORIGIN}/api/workspaces/${workspaceId}/reveal`, {

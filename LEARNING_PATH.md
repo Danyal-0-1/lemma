@@ -343,4 +343,30 @@ introduces zero new event types.
 
 ---
 
-*(M8 is the final milestone: polish + the learning pass.)*
+## M8 — Polish + the learning pass
+
+**What this milestone teaches:** the difference between "it works" and "it's finished" —
+archive/restore, toasts, keyboard shortcuts, empty states, and docs. Small, high-leverage
+touches, plus lifting one piece of state (the build tab) into the store so a keyboard
+shortcut can reach it.
+
+**Read in this order:**
+
+1. [`frontend/src/store/appStore.ts`](frontend/src/store/appStore.ts) — the new
+   `buildTab`, `toasts`, `newSession`, and `exitWorkspace`.
+2. [`frontend/src/App.tsx`](frontend/src/App.tsx) — the global keyboard-shortcut effect.
+3. [`frontend/src/panels/Toasts.tsx`](frontend/src/panels/Toasts.tsx) — self-dismissing
+   notifications.
+4. [`frontend/src/panels/Sidebar.tsx`](frontend/src/panels/Sidebar.tsx) — active vs.
+   archived (History) split.
+
+**RETYPE THIS → [`frontend/src/panels/Toasts.tsx`](frontend/src/panels/Toasts.tsx).**
+Small, self-contained, and it teaches a clean self-cleaning `useEffect` timer.
+
+**All exercises (every milestone) are collected in
+[`learning/exercises.md`](learning/exercises.md).**
+
+---
+
+*All eight milestones are complete. If you read and retype in this order, the codebase
+should hold no surprises — and the app's own mentor can explain anything that still does.*

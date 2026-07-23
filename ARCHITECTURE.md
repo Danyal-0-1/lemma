@@ -101,7 +101,7 @@ dev.
 
 ---
 
-## Current state (through M7)
+## Current state (through M8 — complete)
 
 - **M0:** the shell — FastAPI `GET /health` + the three-panel VS Code-dark layout.
 - **M1:** the event pipe — `events.py` (Event + EventBus + Sequencer) and `ws.py`
@@ -152,5 +152,12 @@ dev.
   build-phase composer, a floating "Explain this" on a Monaco selection, and per-file
   explain links. No new event types — it composes the layers already built.
 
-The polish pass (M8) is next: archive/restore + History, empty states, error toasts,
-keyboard shortcuts, the simplicity audit, and the final learning docs.
+- **M8:** polish. Workspace archive/restore (status flip, directory kept) with a
+  collapsible **History** section; error **toasts** (feed + top-right); **keyboard
+  shortcuts** (new session, focus Diff/Terminal/Checks — `buildTab` lifted into the
+  store); README first-run walkthrough + troubleshooting; `learning/exercises.md`; and a
+  simplicity audit (exactly three panels, phase-aware tabs, no inert controls).
+
+All eight milestones are complete. The three panels never change; every feature is one
+more subsystem that `event_bus.publish(...)`es and, if it's a model call, goes through
+the ModelProvider layer.
