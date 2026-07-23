@@ -307,4 +307,40 @@ line by line — a pattern you'll reuse constantly.
 
 ---
 
-*(M7 and beyond are appended as each milestone lands.)*
+## M7 — Explain (the mentor)
+
+**What this milestone teaches:** how to add an AI feature by REUSING what you already
+built. The mentor is one more model call streamed over the existing event pipe as a new
+role — no new plumbing. You also learn to attach context (the open tab) to a question so
+the answer is grounded.
+
+**Read in this order:**
+
+1. [`backend/app/teach/explain.py`](backend/app/teach/explain.py) — build a mentor prompt
+   from content/question/context and stream it as role "mentor". Teaches: reusing the
+   provider + event pipe.
+2. [`frontend/src/lib/mentor.ts`](frontend/src/lib/mentor.ts) — the one `askMentor` entry
+   point (show the "You" bubble, attach context, post).
+3. [`frontend/src/panels/Conversation.tsx`](frontend/src/panels/Conversation.tsx) — the
+   build-phase composer that routes to the mentor.
+4. [`frontend/src/panels/rightpane/MonacoView.tsx`](frontend/src/panels/rightpane/MonacoView.tsx)
+   — the floating "Explain this" on a text selection. Teaches: Monaco's selection API.
+5. [`frontend/src/panels/rightpane/DiffTab.tsx`](frontend/src/panels/rightpane/DiffTab.tsx)
+   — setting `mentorContext` and the per-file explain action.
+
+**RETYPE THIS → [`backend/app/teach/explain.py`](backend/app/teach/explain.py).** It's a
+compact example of adding a whole feature by composing existing layers — notice it
+introduces zero new event types.
+
+**Exercises:**
+
+1. In `explain.py`, change the MENTOR system prompt's last instruction (in `roles.py`) to
+   also end with a joke. Predict where it shows up, then select some code and Explain it.
+2. Open the Diff tab, then ask "what changed?" in the composer. Now open the Files tab on
+   one file and ask again. Predict how the two answers differ (hint: `mentorContext`).
+3. Select one line in a file vs. a whole function, and Explain each. Predict how the
+   answer's specificity changes (the selection is the `content`).
+
+---
+
+*(M8 is the final milestone: polish + the learning pass.)*

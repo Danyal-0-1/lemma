@@ -32,8 +32,8 @@ we are. Keep it current — it is the contract every future session inherits.
 | M4 — Spec tab + history + export | ✅ done | see `git log` |
 | M5 — Workspaces + Terminal | ✅ done | see `git log` |
 | M6 — Diff + Files + Checks | ✅ done | see `git log` |
-| M7 — Explain (mentor) | ⏳ next | — |
-| M8 — Polish + learning pass | ▫ todo | — |
+| M7 — Explain (mentor) | ✅ done | see `git log` |
+| M8 — Polish + learning pass | ⏳ next | — |
 | M9 — Headless AgentProvider | ▫ optional | — |
 
 ---
@@ -158,6 +158,17 @@ outranks cleverness, brevity, and micro-performance. Concretely (PROMPT.md §1):
   badges. `read_file` has a path-traversal guard (must resolve inside the workspace).
 - **Two git helpers** (`workspaces/gitutil.py`): `git_run` (must succeed) vs `git_output`
   (read-only, ignores non-zero — a `git show HEAD:new_file` "failing" is normal).
+- **The mentor is just another model call.** `teach/explain.py` streams as role
+  `mentor` using the SAME turn events (agent_turn_started/token_stream/completed), so the
+  Conversation renders it for free (green) — no separate panel (§11). Uses the `explain`
+  role model from config; mock returns a canned lesson.
+- **Three Explain triggers, one path** (`lib/mentor.askMentor`): the build-phase composer
+  (question), a floating "Explain this" on a Monaco selection (Diff modified side +
+  Files), and a per-file "explain" link on diff rows. Each shows a "You" bubble then the
+  mentor answers. The active review tab publishes `store.mentorContext` so questions are
+  grounded (e.g. the diff summary / the open file).
+- **Added a `user` role** to the Conversation (our optimistic "You" bubble); turns are
+  appended via the generalized `appendTurn(turns, role, text)` store helper.
 
 ---
 

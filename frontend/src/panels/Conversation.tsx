@@ -18,6 +18,7 @@ import remarkGfm from "remark-gfm";
 
 import { postCancel, postDemo, postOneshot, postSession } from "../lib/api";
 import type { Role } from "../lib/events";
+import { askMentor } from "../lib/mentor";
 import { useAppStore } from "../store/appStore";
 import ApprovalBar from "./ApprovalBar";
 
@@ -29,6 +30,7 @@ const ROLE_META: Record<Role, { label: string; className: string }> = {
   pm: { label: "PM", className: "text-role-pm" },
   mentor: { label: "Mentor", className: "text-role-mentor" },
   system: { label: "System", className: "text-muted" },
+  user: { label: "You", className: "text-fg" },
 };
 
 /** The center column of the three-panel shell. */
@@ -70,6 +72,14 @@ export default function Conversation() {
 
   async function handleCancel() {
     if (sessionId) await postCancel(sessionId);
+  }
+
+  async function handleAskMentor() {
+    const question = draft.trim();
+    if (!question) return;
+    setDraft("");
+    // The active review tab's content rides along as context (set in the store).
+    await askMentor({ userLabel: question, question });
   }
 
   async function runTrigger(trigger: () => Promise<unknown>) {
@@ -143,10 +153,29 @@ export default function Conversation() {
       {awaiting ? (
         <ApprovalBar />
       ) : building ? (
-        <div className="border-t border-line px-3 py-3 text-muted">
-          You're building in the workspace — use the Terminal to run your coding agent.
-          <br />
-          <span className="text-[11px]">(Mentor chat arrives in M7.)</span>
+        <div className="border-t border-line p-3">
+          <textarea
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                void handleAskMentor();
+              }
+            }}
+            placeholder="Ask the mentor… e.g. “what does this diff do?” (the open tab is attached)"
+            className="h-16 w-full resize-none rounded border border-line bg-sidebar px-2 py-1.5 text-fg placeholder:text-muted focus:border-accent focus:outline-none"
+          />
+          <div className="mt-2 flex justify-end">
+            <button
+              type="button"
+              onClick={handleAskMentor}
+              disabled={!draft.trim()}
+              className="rounded bg-accent px-3 py-1.5 text-white hover:bg-accent-hover disabled:opacity-50"
+            >
+              Ask mentor
+            </button>
+          </div>
         </div>
       ) : debating ? (
         <div className="flex items-center justify-between border-t border-line px-3 py-3 text-muted">

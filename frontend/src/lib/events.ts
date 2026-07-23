@@ -11,8 +11,9 @@
 // at runtime in front of the user.
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** Who is speaking in the Conversation. Mirrors the backend role names. */
-export type Role = "generator" | "researcher" | "critic" | "pm" | "mentor" | "system";
+/** Who is speaking in the Conversation. Mirrors the backend role names ("user" is
+ *  our own optimistic bubble for what the founder just asked the mentor). */
+export type Role = "generator" | "researcher" | "critic" | "pm" | "mentor" | "system" | "user";
 
 /** The app's two working phases plus idle. Drives phase-aware chrome. */
 export type Phase = "idle" | "ideation" | "build";

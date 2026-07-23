@@ -264,6 +264,26 @@ export async function runCheck(workspaceId: string, checkId: string): Promise<vo
   if (!response.ok) throw new Error(`run check failed: ${response.status}`);
 }
 
+// --- Explain / mentor (the teaching layer, M7) --------------------------------
+
+/** What to ask the mentor: something to explain and/or a question, plus context. */
+export interface ExplainRequest {
+  content?: string;
+  question?: string;
+  context?: string;
+  context_label?: string;
+}
+
+/** Ask the mentor to explain something; the answer streams over /ws as role mentor. */
+export async function postExplain(request: ExplainRequest): Promise<void> {
+  const response = await fetch(`${BACKEND_ORIGIN}/api/explain`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(request),
+  });
+  if (!response.ok) throw new Error(`explain failed: ${response.status}`);
+}
+
 /** Download a session (transcript + final Spec) as a markdown file (browser save). */
 export async function exportSession(sessionId: string): Promise<void> {
   const response = await fetch(`${BACKEND_ORIGIN}/api/sessions/${sessionId}/export`, {

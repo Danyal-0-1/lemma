@@ -10,11 +10,20 @@
 import { lazy, Suspense, useEffect, useState } from "react";
 
 import { getFile, getFiles } from "../../lib/api";
+import { askMentor } from "../../lib/mentor";
+import { useAppStore } from "../../store/appStore";
 
 const MonacoView = lazy(() => import("./MonacoView"));
 
+/** Shorten a selection so it reads well as a "You" bubble label. */
+function clip(text: string): string {
+  const oneLine = text.replace(/\s+/g, " ").trim();
+  return oneLine.length > 50 ? `${oneLine.slice(0, 50)}…` : oneLine;
+}
+
 /** The Files tab. */
 export default function FilesTab({ workspaceId, active }: { workspaceId: string; active: boolean }) {
+  const setMentorContext = useAppStore((s) => s.setMentorContext);
   const [files, setFiles] = useState<string[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
   const [content, setContent] = useState("");
@@ -31,6 +40,8 @@ export default function FilesTab({ workspaceId, active }: { workspaceId: string;
     setSelected(path);
     const file = await getFile(workspaceId, path, "working");
     setContent(file.content);
+    // Make this file the mentor's context, so a composer question is about it.
+    setMentorContext({ label: path, content: `File ${path}:\n${file.content}` });
   }
 
   return (
@@ -59,7 +70,10 @@ export default function FilesTab({ workspaceId, active }: { workspaceId: string;
       <div className="min-h-0 flex-1">
         {selected ? (
           <Suspense fallback={<p className="p-3 text-muted">Loading…</p>}>
-            <MonacoView content={content} />
+            <MonacoView
+              content={content}
+              onExplain={(text) => void askMentor({ userLabel: `Explain: ${clip(text)}`, content: text })}
+            />
           </Suspense>
         ) : (
           <div className="flex h-full items-center justify-center text-muted">

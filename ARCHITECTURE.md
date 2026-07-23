@@ -101,7 +101,7 @@ dev.
 
 ---
 
-## Current state (through M6)
+## Current state (through M7)
 
 - **M0:** the shell — FastAPI `GET /health` + the three-panel VS Code-dark layout.
 - **M1:** the event pipe — `events.py` (Event + EventBus + Sequencer) and `ws.py`
@@ -146,5 +146,11 @@ dev.
   the terminal and checks. Frontend: DiffTab (poll-while-visible + Monaco diff + sidebar
   +/− counts), read-only FilesTab, and ChecksTab (edit/save/run + green/red badges).
 
-Explain (M7) and the polish pass (M8) arrive next — the Explain mentor reuses the
-ModelProvider layer and streams into the Conversation like the crew does.
+- **M7:** the teaching layer. `teach/explain.py` + `POST /api/explain` stream a MENTOR
+  answer over the existing turn events (role "mentor") — grounded by the active tab's
+  content (`store.mentorContext`). Three triggers, one path (`lib/mentor.askMentor`): the
+  build-phase composer, a floating "Explain this" on a Monaco selection, and per-file
+  explain links. No new event types — it composes the layers already built.
+
+The polish pass (M8) is next: archive/restore + History, empty states, error toasts,
+keyboard shortcuts, the simplicity audit, and the final learning docs.

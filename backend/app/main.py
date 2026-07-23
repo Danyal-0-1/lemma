@@ -33,6 +33,7 @@ from app.ideation.control import cancel_session, resolve_approval, start_session
 from app.ideation.export import render_session_markdown
 from app.oneshot import run_oneshot
 from app.settings import get_settings
+from app.teach.explain import run_explain
 from app.terminal.pty_service import connect_pty, create_terminal
 from app.workspaces import checks, manager
 from app.workspaces.diff import compute_diff
@@ -393,3 +394,31 @@ async def run_check_route(workspace_id: str, check_id: str) -> dict:
     path = await _require_workspace_path(workspace_id)
     asyncio.create_task(checks.run_check(workspace_id, path, check_id))
     return {"status": "running"}
+
+
+# ── Explain / mentor (the teaching layer, M7) ────────────────────────────────
+
+
+class ExplainRequest(BaseModel):
+    """Body for POST /api/explain: what to explain and any surrounding context."""
+
+    content: str | None = None  # a selection / a file / a diff to explain
+    question: str | None = None  # a free-form question from the composer
+    context: str | None = None  # the active tab's content, for grounding
+    context_label: str | None = None  # e.g. "diff", "spec", a file path
+
+
+@app.post("/api/explain")
+async def explain(request: ExplainRequest) -> dict[str, str]:
+    """Ask the mentor to explain something; the answer streams over /ws as role mentor."""
+    session_id = f"explain_{uuid4().hex[:8]}"
+    asyncio.create_task(
+        run_explain(
+            session_id,
+            request.content,
+            request.question,
+            request.context,
+            request.context_label,
+        )
+    )
+    return {"session_id": session_id}

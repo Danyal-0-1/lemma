@@ -105,12 +105,16 @@ interface AppState {
   diffCounts: { additions: number; deletions: number } | null;
   // Per-check run state, keyed by check id (badge + streamed output).
   checkRuns: Record<string, CheckRun>;
+  // What the active review tab is showing, attached to mentor questions as context.
+  mentorContext: { label: string; content: string } | null;
 
   // --- actions ---
   setStatus: (status: ConnectionStatus) => void;
   setMock: (mock: boolean) => void;
   setSessionId: (id: string | null) => void;
   setDiffCounts: (counts: { additions: number; deletions: number } | null) => void;
+  setMentorContext: (context: { label: string; content: string } | null) => void;
+  addUserTurn: (text: string) => void;
   clearConversation: () => void;
   restoreSession: (payload: RestorePayload) => void;
   activateWorkspace: (workspace: WorkspaceInfo) => void;
@@ -131,11 +135,14 @@ export const useAppStore = create<AppState>((set) => ({
   activeWorkspace: null,
   diffCounts: null,
   checkRuns: {},
+  mentorContext: null,
 
   setStatus: (status) => set({ status }),
   setMock: (mock) => set({ mock }),
   setSessionId: (id) => set({ sessionId: id }),
   setDiffCounts: (counts) => set({ diffCounts: counts }),
+  setMentorContext: (context) => set({ mentorContext: context }),
+  addUserTurn: (text) => set((state) => ({ turns: appendTurn(state.turns, "user", text) })),
   activateWorkspace: (workspace) =>
     // Switching workspaces resets the review state so we don't show stale diff/checks.
     set({ activeWorkspace: workspace, phase: "build", diffCounts: null, checkRuns: {} }),
@@ -288,13 +295,13 @@ export const useAppStore = create<AppState>((set) => ({
 
         case "error": {
           const p = event.payload as unknown as ErrorPayload;
-          return { turns: appendSystemTurn(state.turns, `⚠️ ${p.message}`) };
+          return { turns: appendTurn(state.turns, "system", `⚠️ ${p.message}`) };
         }
 
         case "budget_exceeded": {
           const p = event.payload as unknown as BudgetExceededPayload;
           const text = `⚠️ Budget stop: used ${p.used} tokens (limit ${p.limit}).`;
-          return { turns: appendSystemTurn(state.turns, text) };
+          return { turns: appendTurn(state.turns, "system", text) };
         }
 
         // hello / heartbeat / anything we don't render: no state change.
@@ -322,14 +329,8 @@ function markLastTurnDone(turns: Turn[]): Turn[] {
   return next;
 }
 
-/** Append a non-streaming "system" bubble (used for errors and budget notices). */
-function appendSystemTurn(turns: Turn[], text: string): Turn[] {
-  const turn: Turn = {
-    id: crypto.randomUUID(),
-    role: "system",
-    round: 0,
-    text,
-    streaming: false,
-  };
+/** Append a non-streaming bubble for the given role (system notices, user questions). */
+function appendTurn(turns: Turn[], role: Role, text: string): Turn[] {
+  const turn: Turn = { id: crypto.randomUUID(), role, round: 0, text, streaming: false };
   return [...turns, turn];
 }
