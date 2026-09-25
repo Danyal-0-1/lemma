@@ -1,5 +1,7 @@
 <!-- READING ORDER: 1 — start here. -->
-# AI Company
+# Lemma
+
+> *Lemma* (Greek *lēmma*): a small proven step on the way to a bigger theorem. Each milestone you read and retype is one.
 
 A **local-first, single-user** web app for turning a rough idea into a build-ready
 spec with a small crew of AI roles, then handing that spec to a real coding agent
@@ -153,3 +155,9 @@ other host unless you explicitly set `I_UNDERSTAND_THE_RISK=true`.
 See [`PROMPT.md`](PROMPT.md) §5 for the full tree, or [`ARCHITECTURE.md`](ARCHITECTURE.md)
 for the runtime picture. Top level: `backend/` (FastAPI), `frontend/` (Vite + React),
 `learning/` (your retyping scratch space), `scripts/` (dev helpers).
+
+---
+
+## License
+
+[MIT](LICENSE) © 2026 Danyal-0-1

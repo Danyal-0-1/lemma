@@ -15,7 +15,7 @@
 # Running `make` with no target prints this help (the first target is the default,
 # but we make `help` explicit for clarity).
 help:
-	@echo "AI Company — available commands:"
+	@echo "Lemma — available commands:"
 	@echo "  make install   Install backend (uv) and frontend (npm) dependencies"
 	@echo "  make backend   Run the FastAPI backend on 127.0.0.1:8000"
 	@echo "  make frontend  Run the Vite dev server on 127.0.0.1:5173"

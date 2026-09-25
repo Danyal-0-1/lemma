@@ -83,7 +83,7 @@ export default function App() {
       <Toasts />
       {/* Slim title bar. */}
       <header className="flex h-9 flex-none items-center border-b border-line bg-sidebar px-3 font-semibold text-fg">
-        AI Company
+        Lemma
       </header>
 
       {/* Exactly three panels, now resizable. Sizes are percentages of the width. */}

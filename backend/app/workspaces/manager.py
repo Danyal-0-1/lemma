@@ -98,7 +98,7 @@ def create_from_spec(spec_artifact_id: int) -> Workspace:
     _git(
         [
             "-c",
-            "user.name=AI Company",
+            "user.name=Lemma",
             "-c",
             "user.email=noreply@ai-company.local",
             "commit",

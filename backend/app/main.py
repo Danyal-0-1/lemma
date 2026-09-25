@@ -96,17 +96,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         )
 
     mode = "MOCK (no keys, no cost)" if settings.mock_llm else "LIVE (real model calls)"
-    logger.info("AI Company backend v%s starting — %s", SERVER_VERSION, mode)
+    logger.info("Lemma backend v%s starting — %s", SERVER_VERSION, mode)
     logger.info("Serving on http://%s:%d", settings.host, settings.port)
 
     yield  # ── the app serves requests while suspended here ──
 
-    logger.info("AI Company backend shutting down.")
+    logger.info("Lemma backend shutting down.")
 
 
 # The application object uvicorn imports and runs. The lifespan handler above wires in
 # our startup checks.
-app = FastAPI(title="AI Company", version=SERVER_VERSION, lifespan=lifespan)
+app = FastAPI(title="Lemma", version=SERVER_VERSION, lifespan=lifespan)
 
 # CORS lets the browser (served from :5173) call this API (served from :8000).
 # We allow only the known frontend origins — not "*" — because this server is powerful.

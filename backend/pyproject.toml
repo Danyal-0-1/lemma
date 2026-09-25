@@ -11,10 +11,11 @@
 # ─────────────────────────────────────────────────────────────────────────────
 
 [project]
-name = "ai-company-backend"
+name = "lemma-backend"
 version = "0.1.0"
 description = "Local-first AI ideation + build orchestration shell (backend)."
 requires-python = ">=3.12"
+license = { text = "MIT" }
 
 # Runtime dependencies. Added milestone by milestone so each package appears with
 # the feature that needs it.
