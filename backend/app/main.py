@@ -47,12 +47,12 @@ VALID_DECISIONS = {"approve", "changes", "reject"}
 # frontend can tell which backend it's talking to.
 SERVER_VERSION = "0.1.0"
 
-# The frontend dev server runs here; the browser will call our API from this origin,
-# so CORS must explicitly allow it. (Same host, different port = a "cross origin" request.)
-FRONTEND_ORIGINS = [
-    "http://localhost:5173",
-    "http://127.0.0.1:5173",
-]
+# The browser calls our API from the frontend's origin (same host, different port = a
+# "cross origin" request), so CORS must allow it. We allow ANY port on this machine's
+# loopback address rather than just :5173, because Vite quietly moves to :5174, :5175…
+# when 5173 is busy — and a hard-coded port would then silently reject every request.
+# Still local-only: a page on another machine or domain never matches this pattern.
+FRONTEND_ORIGIN_REGEX = r"^http://(localhost|127\.0\.0\.1):\d+$"
 
 logger = logging.getLogger("aicompany")
 
@@ -108,11 +108,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 # our startup checks.
 app = FastAPI(title="Lemma", version=SERVER_VERSION, lifespan=lifespan)
 
-# CORS lets the browser (served from :5173) call this API (served from :8000).
-# We allow only the known frontend origins — not "*" — because this server is powerful.
+# CORS lets the browser (served from the Vite port) call this API (served from :8000).
+# We allow only local origins — never "*" — because this server runs shell commands.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=FRONTEND_ORIGINS,
+    allow_origin_regex=FRONTEND_ORIGIN_REGEX,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
