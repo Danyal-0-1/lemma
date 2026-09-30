@@ -216,9 +216,9 @@ def test_portable_install_and_uninstall_round_trip(tmp_path: Path) -> None:
     assert (prefix / ".lemma-install" / "installed-files").is_file()
     assert (home / ".local/bin/lemma").is_symlink()
     assert os.readlink(home / ".local/bin/lemma") == str(prefix / "bin/lemma")
-    assert str(prefix / "bin/lemma") in (
-        data_home / "applications/io.lemma.Lemma.desktop"
-    ).read_text()
+    assert (
+        str(prefix / "bin/lemma") in (data_home / "applications/io.lemma.Lemma.desktop").read_text()
+    )
     assert str(prefix) in (data_home / "systemd/user/lemma.service").read_text()
     assert stat.S_IMODE((prefix / "share/lemma/env.default").stat().st_mode) == 0o600
     assert not (prefix / ".lemma-install.next").exists()
