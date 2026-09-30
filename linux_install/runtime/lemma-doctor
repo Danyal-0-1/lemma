@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+# Read-only diagnostics for an installed Lemma application.
+set -u
+
+SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
+INSTALL_ROOT="$(cd "$(dirname "$SCRIPT_PATH")/.." && pwd -P)"
+DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
+CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
+VERSION="$(tr -d '\r\n' < "$INSTALL_ROOT/VERSION" 2>/dev/null)"
+PYTHON_ABI="$(tr -d '\r\n' < "$INSTALL_ROOT/PYTHON_ABI" 2>/dev/null)"
+failures=0
+
+ok() { printf '  [ok]   %s\n' "$*"; }
+warn() { printf '  [warn] %s\n' "$*"; }
+fail() { printf '  [fail] %s\n' "$*"; failures=$((failures + 1)); }
+
+printf 'Lemma Linux doctor\n'
+printf '  install: %s\n' "$INSTALL_ROOT"
+printf '  version: %s\n' "${VERSION:-unknown}"
+
+if [[ -f "$INSTALL_ROOT/manifest.sha256" ]] && \
+  (cd "$INSTALL_ROOT" && sha256sum --check --quiet manifest.sha256); then
+  ok "installed-file checksums"
+else
+  fail "installed files differ from the release manifest"
+fi
+
+python_bin="$(command -v "python$PYTHON_ABI" 2>/dev/null || command -v python3 2>/dev/null || true)"
+if [[ -n "$python_bin" ]]; then
+  actual="$($python_bin -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null)"
+  if [[ "$actual" == "$PYTHON_ABI" ]]; then
+    ok "Python $actual ($python_bin)"
+  else
+    fail "Python ABI $PYTHON_ABI is required; found ${actual:-unknown}"
+  fi
+else
+  fail "Python $PYTHON_ABI is unavailable"
+fi
+
+for command_name in git flock sha256sum; do
+  if command -v "$command_name" >/dev/null 2>&1; then
+    ok "$command_name is available"
+  else
+    fail "$command_name is required"
+  fi
+done
+
+if command -v xdg-open >/dev/null 2>&1 || command -v gio >/dev/null 2>&1; then
+  ok "desktop browser opener is available"
+else
+  warn "no xdg-open/gio; use http://127.0.0.1:5173 manually"
+fi
+
+config_file="$CONFIG_HOME/lemma/.env"
+if [[ -f "$config_file" ]]; then
+  mode="$(stat -c '%a' -- "$config_file" 2>/dev/null)"
+  if [[ "$mode" == "600" ]]; then
+    ok "private configuration permissions (0600)"
+  else
+    fail "configuration should be mode 0600, not ${mode:-unknown}"
+  fi
+else
+  warn "configuration will be created on first start"
+fi
+
+if command -v git >/dev/null 2>&1; then
+  git_version="$(git --version 2>/dev/null || true)"
+  ok "${git_version:-Git executable found}"
+  if command -v ssh >/dev/null 2>&1; then
+    ok "SSH transport available for GitHub remotes"
+  else
+    warn "install OpenSSH client to use git@github.com remotes"
+  fi
+fi
+
+if command -v gh >/dev/null 2>&1; then
+  if gh auth status >/dev/null 2>&1; then
+    ok "GitHub CLI is authenticated"
+  else
+    warn "GitHub CLI is installed but not authenticated"
+  fi
+else
+  warn "GitHub CLI is optional; HTTPS/SSH Git remotes still work"
+fi
+
+if "$INSTALL_ROOT/bin/lemma" status >/dev/null 2>&1; then
+  ok "backend health endpoint"
+else
+  warn "service is not running (start with: lemma start)"
+fi
+
+user_app="$DATA_HOME/lemma/app-$VERSION"
+if [[ -d "$user_app/.git" ]]; then
+  ok "installed source worktree is Git-tracked: $user_app"
+else
+  warn "source worktree will be initialized on first start"
+fi
+
+if (( failures > 0 )); then
+  printf '\nDoctor found %d blocking problem(s).\n' "$failures"
+  exit 1
+fi
+printf '\nDoctor found no blocking problems.\n'

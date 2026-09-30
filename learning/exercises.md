@@ -55,9 +55,9 @@ learning is. (Use git to undo: `git stash` or `git checkout -- <file>`.)
 
 ## M5 — Workspaces + Terminal
 
-1. Start with `ANTHROPIC_API_KEY=test123 make dev`, open a workspace terminal, run
-   `echo $ANTHROPIC_API_KEY`. Predict the output (**empty** — the whole point). Then
-   comment out the two `env.pop(...)` lines in `shell_env.py` and try again.
+1. Start with a fake `LEMMA_TEST_SECRET=test123`, opt into host execution, open a
+   workspace terminal, and run `echo $LEMMA_TEST_SECRET`. Predict the empty output,
+   then inspect `_SAFE_KEYS` to explain it. Do not weaken the allowlist with real keys.
 2. Change the commit message in `manager.py`; predict where you'd see it
    (`git -C ~/ai-company-workspaces/<slug> log`).
 3. Open a workspace, switch to Spec and back to Terminal; predict whether your shell
@@ -67,8 +67,8 @@ learning is. (Use git to undo: `git stash` or `git checkout -- <file>`.)
 
 1. `echo hi > x.txt` in the terminal, then open the Diff tab (don't Refresh). Predict how
    long until it appears (the 5s poll).
-2. Add a check `sleep 2 && echo done`, run it, immediately run it again. Predict what
-   happens (the per-workspace lock).
+2. Add a check `/bin/sh -c 'sleep 2; echo done'`, run it, then immediately run it again.
+   Predict what happens (the per-workspace lock and explicit-shell argv parsing).
 3. In `diff.py`, change `git diff HEAD` to `git diff`; predict what the Diff tab shows
    after you *stage* a change (`git add`) in the terminal.
 
@@ -86,3 +86,12 @@ learning is. (Use git to undo: `git stash` or `git checkout -- <file>`.)
    and where the workspace goes. Restore it and predict whether the terminal reopens.
 2. Trigger an error (e.g. `MOCK_LLM=false` with no key, then "One turn"); predict where
    it shows up (a toast AND the conversation feed).
+
+## R&D Studio
+
+1. Put two department-scoped agents in different departments and try to create one
+   meeting with both. Predict the policy error; make them organization-scoped and retry.
+2. Add a priority to an agent duty card. Predict where it appears in that agent's next
+   task prompt and why it does not grant a terminal or network capability.
+3. Run a meeting with two participants. Predict the durable transcript shape: two
+   contributions followed by one facilitator synthesis.

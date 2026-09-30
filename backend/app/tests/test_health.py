@@ -30,3 +30,4 @@ def test_health_returns_ok() -> None:
     assert body["version"] == SERVER_VERSION
     # Mock mode is the default, so a fresh config should report mock_llm=true.
     assert body["mock_llm"] is True
+    assert body["enable_host_execution"] is False

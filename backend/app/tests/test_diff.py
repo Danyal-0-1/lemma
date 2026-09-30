@@ -10,11 +10,18 @@
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from app.workspaces.diff import compute_diff
 
 
 def _run(args: list[str], cwd: Path) -> None:
-    subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True)
+    result = subprocess.run(
+        ["git", "-C", str(cwd), *args], capture_output=True, text=True
+    )
+    if result.returncode == 69 and "Xcode license" in result.stderr:
+        pytest.skip("Apple Git is unavailable until the local Xcode license is accepted")
+    result.check_returncode()
 
 
 def _init_repo(path: Path) -> None:

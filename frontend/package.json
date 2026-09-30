@@ -6,12 +6,13 @@
   "name": "lemma-frontend",
   "private": true,
   "license": "MIT",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc --noEmit && vite build",
+    "build": "npm run verify:config && tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",
+    "verify:config": "node scripts/verify-config.mjs",
     "preview": "vite preview"
   },
   "dependencies": {

@@ -98,6 +98,37 @@ _MENTOR_PROSE = (
     "**Try this:** add a new event name and watch it flow end to end."
 )
 
+_LAB_RESEARCH_PROSE = (
+    "## Finding\n\n"
+    "The supplied context supports a cautious working conclusion, but it does not yet "
+    "establish causality. The strongest signal is the repeated alignment between the "
+    "stated constraint and the proposed direction.\n\n"
+    "**What is supported**\n- The question is narrow enough to test.\n- The current "
+    "evidence points to a feasible first experiment.\n\n"
+    "**Uncertainty and counter-evidence**\nThe context contains no independently verified "
+    "sources or baseline comparison, so confidence should remain moderate. A disconfirming "
+    "case could change the recommendation.\n\n"
+    "**Recommended next step**\nRun a small comparison against one credible alternative, "
+    "record the decision metric in advance, and attach primary sources before publication."
+)
+
+_LAB_MEETING_CONTRIBUTION = (
+    "My role-specific assessment is that the team should separate the attractive hypothesis "
+    "from the evidence actually supplied. I support a small reversible experiment, provided "
+    "we define a baseline and a failure threshold first. The material disagreement to resolve "
+    "is whether speed or evidentiary confidence matters more for the next decision."
+)
+
+_LAB_MEETING_SYNTHESIS = (
+    "## Meeting synthesis\n\n"
+    "**Agreement:** pursue a bounded experiment rather than a full commitment. The current "
+    "direction is plausible, but the transcript does not contain verified external evidence.\n\n"
+    "**Disagreement:** participants weight delivery speed and confidence differently.\n\n"
+    "**Decision:** define one measurable baseline, one alternative, and a stop condition.\n\n"
+    "**Action items:** (1) research owner gathers primary sources; (2) experiment owner drafts "
+    "the comparison; (3) facilitator reviews results and records remaining uncertainty."
+)
+
 _DEFAULT_CANNED = (
     "This is a mock response. Set `MOCK_LLM=false` and add a provider key in "
     "`backend/.env` to stream real model output here."
@@ -112,8 +143,18 @@ def _pick_canned(messages: list[ChatMessage]) -> str:
     prompt, which keeps it robust to small wording changes.
     """
     system_text = " ".join(m.content for m in messages if m.role == "system").lower()
+    all_text = " ".join(m.content for m in messages).lower()
     wants_json = "json" in system_text  # the M3 role prompts explicitly ask for JSON
 
+    # Lab prompts contain user-defined names, roles, and missions. Match their fixed
+    # capability-boundary phrase first so an agent named "Mentor" cannot be mistaken
+    # for the legacy teaching role.
+    if "private research lab" in system_text:
+        if "synthesize the bounded meeting transcript" in all_text:
+            return _LAB_MEETING_SYNTHESIS
+        if "prepare exactly one contribution" in all_text:
+            return _LAB_MEETING_CONTRIBUTION
+        return _LAB_RESEARCH_PROSE
     if "you are the researcher" in system_text:
         return _RESEARCHER_JSON
     if "you are the critic" in system_text:

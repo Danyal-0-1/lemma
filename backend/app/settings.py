@@ -22,7 +22,9 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
+from urllib.parse import urlsplit
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # The backend/ directory (this file is backend/app/settings.py → parent.parent = backend/).
@@ -60,18 +62,41 @@ class Settings(BaseSettings):
     # Mock mode is ON by default: the app runs fully with zero keys and zero cost.
     mock_llm: bool = True
 
+    # Shells and verification commands execute programs on the host. Keep that entire
+    # surface off unless the local operator opts in deliberately.
+    enable_host_execution: bool = False
+
     # --- Server binding ---
     host: str = "127.0.0.1"
     port: int = 8000
 
+    # Exact browser origins accepted for state-changing REST calls and WebSockets.
+    # Keeping this a comma-separated string makes it convenient to set in .env while
+    # allowed_frontend_origins() gives callers a validated list.
+    frontend_origins: str = (
+        "http://127.0.0.1:5173,http://localhost:5173,"
+        "http://127.0.0.1:4173,http://localhost:4173,"
+        "http://127.0.0.1:8000,http://localhost:8000"
+    )
+
     # Where build workspaces get created (M5). "~" is expanded lazily where used.
     workspaces_dir: str = "~/ai-company-workspaces"
 
+    # Installed desktop builds keep mutable data below XDG_DATA_HOME instead of the
+    # read-only application directory.  The aliases are intentionally Lemma-specific
+    # so an unrelated DATA_DIR environment variable cannot relocate private data.
+    data_dir: str = Field(
+        default=str(BACKEND_DIR / "data"),
+        validation_alias="LEMMA_DATA_DIR",
+    )
+    git_vault_dir: str = Field(
+        default=str(BACKEND_DIR / "data" / "git-vault"),
+        validation_alias="LEMMA_GIT_VAULT_DIR",
+    )
+    auto_git_vault: bool = Field(default=True, validation_alias="LEMMA_AUTO_GIT_VAULT")
+
     # --- Logging ---
     log_level: str = "INFO"
-
-    # --- Escape hatch: allow a non-localhost HOST only when explicitly acknowledged. ---
-    i_understand_the_risk: bool = False
 
     def has_any_key(self) -> bool:
         """True if at least one real provider key is configured.
@@ -82,7 +107,7 @@ class Settings(BaseSettings):
         return bool(self.deepseek_api_key or self.anthropic_api_key or self.openai_api_key)
 
     def assert_safe_binding(self) -> None:
-        """Refuse to run on a non-localhost host unless the risk was acknowledged.
+        """Refuse to run on a non-localhost host, without an escape hatch.
 
         Exists because this app spawns shells and runs commands; a network-exposed
         instance is a remote code execution service. We fail fast and loud rather
@@ -90,13 +115,39 @@ class Settings(BaseSettings):
         """
         if self.host in LOCAL_HOSTS:
             return
-        if self.i_understand_the_risk:
-            return
         raise RuntimeError(
             f"Refusing to bind to HOST={self.host!r}: this app executes shell commands, "
-            f"so binding beyond localhost exposes a remote-code-execution surface. "
-            f"Use HOST=127.0.0.1, or set I_UNDERSTAND_THE_RISK=true if you really mean it."
+            "so binding beyond localhost exposes a remote-code-execution surface. "
+            "Use HOST=127.0.0.1. Remote access requires a separately authenticated gateway."
         )
+
+    def allowed_frontend_origins(self) -> list[str]:
+        """Return exact loopback browser origins accepted by the backend."""
+        origins = [item.strip().rstrip("/") for item in self.frontend_origins.split(",")]
+        origins = [item for item in origins if item]
+        if not origins:
+            raise RuntimeError("FRONTEND_ORIGINS must contain at least one exact origin")
+        for origin in origins:
+            try:
+                parsed = urlsplit(origin)
+                port = parsed.port
+            except ValueError as error:
+                raise RuntimeError(f"invalid frontend origin: {origin!r}") from error
+            if (
+                parsed.scheme not in {"http", "https"}
+                or parsed.hostname not in LOCAL_HOSTS
+                or parsed.username is not None
+                or parsed.password is not None
+                or parsed.path not in {"", "/"}
+                or parsed.query
+                or parsed.fragment
+                or port is None
+            ):
+                raise RuntimeError(
+                    f"FRONTEND_ORIGINS entries must be exact loopback origins with a port: "
+                    f"{origin!r}"
+                )
+        return origins
 
 
 @lru_cache

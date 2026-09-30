@@ -2,9 +2,9 @@
 
 <!-- READING ORDER: 6 — read once you've skimmed README + CLAUDE. -->
 
-This document is the map. It's updated whenever the structure changes (PROMPT.md §1
-rule 9). Right now (M0) only the skeleton exists; sections marked *(arrives in Mn)*
-describe what the finished shape will be so you can see where each milestone plugs in.
+This document is the map. The original M0–M8 workbench remains intact, and the R&D
+Studio adds a configurable research organization above it. The local build is a
+single-user application; it is not a remotely deployable multi-tenant service.
 
 ---
 
@@ -12,38 +12,43 @@ describe what the finished shape will be so you can see where each milestone plu
 
 ```
 ┌────────────────────────── FRONTEND (Vite + React + TS) ─────────────────────┐
-│ Sidebar           │ Conversation            │ Review pane (phase-aware):    │
-│ sessions,         │ crew debate · mentor ·  │ Diff | Terminal | Files |     │
-│ workspaces,       │ approval bar · composer │ Checks | Spec                 │
-│ history           │                         │                               │
-└────▲───────────────▲────────────────────────────────────────▲───────────────┘
-     │ REST (actions)│ WebSocket /ws (events)                 │ WebSocket /pty
-┌────┴───────────────┴────────────────────────────────────────┴───────────────┐
-│                        BACKEND (FastAPI, Python 3.12)                        │
+│ Activity rail │ Context explorer │ HQ / Organization / Research / Meetings │
+│               │                  │ Security / original three-pane Workbench │
+└──────▲────────┴────────▲─────────┴──────────────────────────▲───────────────┘
+       │ REST actions    │ addressed WebSocket events         │ /pty (optional)
+┌──────┴─────────────────┴────────────────────────────────────┴───────────────┐
+│                        BACKEND (FastAPI, Python 3.12+)                       │
+│ LocalOnlyMiddleware: loopback peer + Host + exact Origin                    │
 │                                                                              │
-│  EventBus (in-process pub/sub) ── every subsystem publishes; /ws fans out    │
+│ Research Lab: departments · duty cards · projects · tasks · findings        │
+│   LabOrchestrator: prompt-only task turns + bounded meeting protocol         │
+│   ModelProvider: Mock or LiteLLM → configured provider                      │
 │                                                                              │
-│  IdeationOrchestrator (custom state machine — NO agent framework)   (M3)     │
-│      └── ModelProvider (LiteLLM) → DeepSeek / Anthropic / OpenAI     (M2)     │
-│  BuildCoordinator                                                   (M5)      │
-│      └── AgentProvider (v1: PTY terminal)                            (M5)     │
-│  WorkspaceManager (dirs, git init, diff, checks, archive)          (M5/M6)    │
-│  PtyService (os.openpty + shell, resize, sanitized env)             (M5)      │
-│  Persistence (SQLite via SQLModel): sessions, messages, artifacts   (M3)     │
+│ Original Workbench: ideation → approved Spec → workspace → review           │
+│ Host tools (off by default): PTY terminal + argv checks + Git workspace      │
+│                                                                              │
+│ EventBus (live delivery) + SQLite/SQLModel (durable state and audit trail)   │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
+The critical boundary is vertical: research agents can call only the model provider.
+They cannot import or reach terminal, workspace, checks, environment, connector, or
+secret APIs. `ENABLE_HOST_EXECUTION` unlocks trusted-human workbench controls only.
+
 ---
 
-## Two phases
+## Product areas
 
-- **Phase 0 — Ideation.** A crew of AI roles (Generator → Researcher → Critic → PM)
-  debate a seed idea and converge on a human-approved **Spec**.
-- **Phase 1 — Build.** The approved Spec becomes an isolated workspace directory; the
-  user drives a real coding agent (`claude`/`codex`) in the embedded terminal, and the
-  app streams diffs, check results, and mentor explanations back into the UI.
+- **R&D Studio.** Create durable departments or temporary mission teams, define agent
+  duty cards and communication scopes, assign tasks, review findings, and run fixed
+  roster meetings with one contribution per participant plus facilitator synthesis.
+- **Original Workbench — Phase 0, Ideation.** A fixed crew (Generator → Researcher →
+  Critic → PM) debates a seed and converges on a human-approved **Spec**.
+- **Original Workbench — Phase 1, Build.** The approved Spec becomes a workspace; a
+  trusted human may opt into a real terminal, then inspect diffs and bounded checks.
 
-The UI is **phase-aware**: controls that do nothing in the current phase are not rendered.
+The workbench UI remains phase-aware: controls that do nothing in the current phase
+are not rendered.
 
 ---
 
@@ -94,14 +99,65 @@ keeps both sides simple.
 
 ## Persistence *(M3)*
 
-SQLite (via SQLModel) at `backend/data/app.db` (gitignored). Tables: `IdeationSession`,
-`Message`, `Artifact` (append-only — each new version is a new row, so you can watch an
-idea evolve), `CostRecord`, `Workspace`. No migrations in v1 — tables are recreated in
-dev.
+SQLite (via SQLModel) at `backend/data/app.db` (gitignored). Original tables store
+ideation sessions, messages, append-only artifacts, cost, and workspaces. Lab tables
+store departments, agents, projects, tasks, runs, results, findings, meetings, ordered
+meeting messages, and append-only activity records. There is no migration system yet;
+back up the database before evolving schemas.
+
+SQLite remains the live transactional source of truth. `state_vault.py` also renders a
+deterministic `lemma-state.json`, with credential-shaped fields redacted, into a
+separate local Git repository. It snapshots at startup, shutdown, and periodically
+while the backend is running, appears as the built-in **Lemma state vault** Source
+Control workspace, and never adds a remote or pushes automatically. The snapshot
+contains research content, so its local Git history remains sensitive despite these
+redactions and the removal of absolute workspace paths.
 
 ---
 
-## Current state (through M8 — complete)
+## Offline Linux release and installed runtime
+
+`linux_install/build.sh` is a Linux-only, offline release pipeline. It consumes the
+committed npm and uv lockfiles from pre-populated local caches, verifies that the
+frontend, backend, and server versions agree, and emits an architecture-specific
+directory plus `.tar.gz` and SHA-256 checksum. The bundle contains the production web
+assets, a source seed, vendored Python dependencies, launchers, top-level portable
+install/uninstall scripts, a complete file manifest, build metadata, and third-party
+notices. `build-deb.sh` verifies that same bundle before placing it under `/opt/lemma`
+and adding Debian command, desktop, and user-systemd integration; it does not resolve
+or download a second dependency set.
+
+The portable installer defaults to `~/.local/opt/lemma` and records every owned path
+for exact upgrades and removal. The installed program and mutable user state remain
+separate:
+
+| Layer | Default installed location | Lifecycle |
+|---|---|---|
+| Replaceable application payload | `~/.local/opt/lemma` or `/opt/lemma` | Replaced by portable or Debian upgrades |
+| Private configuration | `${XDG_CONFIG_HOME:-~/.config}/lemma/.env` | Created mode `0600`; preserved on normal removal |
+| Live database and local state vault | `${XDG_DATA_HOME:-~/.local/share}/lemma/data/` | Persistent, private user data |
+| Versioned writable source copy | `${XDG_DATA_HOME:-~/.local/share}/lemma/app-<version>/` | Created and Git-initialized on first launch |
+| Fallback logs | `${XDG_STATE_HOME:-~/.local/state}/lemma/` | Persistent operational state |
+| Project repositories | `~/ai-company-workspaces/` by default | Never part of the application payload |
+
+On first launch, `lemma-server` copies the bundled source seed into the versioned user
+tree and links its `backend/data` path to the persistent XDG data directory. The static
+frontend and vendored Python packages continue to run from the replaceable install
+root. This lets package upgrades preserve research state without making `/opt/lemma`
+user-writable.
+
+Native Python dependencies make a release specific to its CPU architecture, compatible
+system C libraries, and exact Python `major.minor`. The builder records that value in
+`PYTHON_ABI`; `lemma-server` refuses a different interpreter, and the Debian package
+depends on the matching versioned Python package. Release manifests and archive/package
+checksums detect corruption or modification, but releases are not cryptographically
+signed. Installed builds retain the same fixed loopback ports and single-user security
+model as development; packaging does not make Lemma suitable for remote or multi-user
+deployment.
+
+---
+
+## Current state (R&D Studio plus M0–M8)
 
 - **M0:** the shell — FastAPI `GET /health` + the three-panel VS Code-dark layout.
 - **M1:** the event pipe — `events.py` (Event + EventBus + Sequencer) and `ws.py`
@@ -135,15 +191,15 @@ dev.
   under `~/ai-company-workspaces/<slug>` (SPEC.md/spec.json/CLAUDE.md/aicompany.json);
   `build/coordinator.py` emits `workspace_created` + `phase_changed(build)`;
   `terminal/pty_service.py` runs an interactive shell over the **separate `/pty`
-  socket** with the env sanitized (keys stripped) and macOS-safe reaping. Frontend: the
+  socket** with an allowlisted child environment and macOS-safe reaping. Frontend: the
   xterm `TerminalTab` (lazy-loaded, stays mounted across tab switches), phase-aware
   build tabs, and Open-in-editor / Reveal.
 
 - **M6:** the review loop. `workspaces/diff.py` (changes vs HEAD + untracked),
   `workspaces/files.py` (list/read with a path-traversal guard), `workspaces/checks.py`
   (run saved commands with the shared sanitized env, one at a time, streaming
-  `check_*` events). `app/shell_env.py` now centralizes the key-stripping used by both
-  the terminal and checks. Frontend: DiffTab (poll-while-visible + Monaco diff + sidebar
+  `check_*` events). `app/shell_env.py` centralizes the child-environment allowlist used
+  by both the terminal and checks. Frontend: DiffTab (poll-while-visible + Monaco diff + sidebar
   +/− counts), read-only FilesTab, and ChecksTab (edit/save/run + green/red badges).
 
 - **M7:** the teaching layer. `teach/explain.py` + `POST /api/explain` stream a MENTOR
@@ -158,6 +214,7 @@ dev.
   store); README first-run walkthrough + troubleshooting; `learning/exercises.md`; and a
   simplicity audit (exactly three panels, phase-aware tabs, no inert controls).
 
-All eight milestones are complete. The three panels never change; every feature is one
-more subsystem that `event_bus.publish(...)`es and, if it's a model call, goes through
-the ModelProvider layer.
+All original milestones and the R&D Studio are implemented. Model calls use the shared
+provider layer and cost records; durable outcomes go to SQLite; addressed live progress
+uses the event bus. See [SECURITY.md](SECURITY.md) before changing any capability or
+deployment boundary.

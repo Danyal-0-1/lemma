@@ -234,8 +234,8 @@ objects/arrays it renders a child node per entry — the same function, all the 
 
 **What this milestone teaches:** how the app crosses from "planning" into "building" —
 turning a Spec into a real git repo on disk, and running a genuine interactive shell
-inside the browser. It also holds the single most important safety measure in the app
-(stripping API keys before spawning the shell).
+inside the browser. It also holds a central safety measure: constructing an allowlisted
+child environment rather than copying credentials into the shell.
 
 **Read in this order:**
 
@@ -243,8 +243,9 @@ inside the browser. It also holds the single most important safety measure in th
    directory, `git init`, write the scaffold files, first commit. Teaches: driving git
    and the filesystem from Python.
 2. [`backend/app/terminal/pty_service.py`](backend/app/terminal/pty_service.py) — the
-   PTY: spawn a shell, pump bytes, resize, reap. **Read `_sanitized_env` first** — it's
-   the billing-safety line. Teaches: pseudo-terminals, non-blocking fds, process reaping.
+   PTY: spawn a shell, pump bytes, resize, reap. Read `shell_env.py` first — it owns the
+   credential and billing-safety boundary. Teaches: pseudo-terminals, non-blocking fds,
+   process reaping.
 3. [`backend/app/build/coordinator.py`](backend/app/build/coordinator.py) — the bridge
    that makes a workspace and announces the build phase.
 4. [`frontend/src/panels/rightpane/TerminalTab.tsx`](frontend/src/panels/rightpane/TerminalTab.tsx)
@@ -255,13 +256,13 @@ inside the browser. It also holds the single most important safety measure in th
 **RETYPE THIS → [`backend/app/terminal/pty_service.py`](backend/app/terminal/pty_service.py).**
 It's the most instructive file in the app: a real PTY in ~180 lines, and the one place
 where getting it wrong (leaking a key, leaving a zombie) has real consequences. Type it
-slowly and make sure you can explain `_sanitized_env` and `close()`.
+slowly and make sure you can explain `sanitized_env()` and `close()`.
 
 **Exercises:**
 
-1. Start the app with `ANTHROPIC_API_KEY=test123 make dev`, open a workspace terminal,
-   and run `echo $ANTHROPIC_API_KEY`. Predict the output. (It should be EMPTY — that's
-   the whole point.) Then comment out the two `env.pop(...)` lines and try again.
+1. Start the app with a fake `LEMMA_TEST_SECRET=test123`, opt into host execution, and
+   run `echo $LEMMA_TEST_SECRET` in a workspace terminal. Predict the empty output, then
+   inspect `_SAFE_KEYS` to explain why. Do not weaken the allowlist with real secrets.
 2. In `manager.py`, change the commit message. Predict where you'd see it, then create a
    workspace and run `git -C ~/ai-company-workspaces/<slug> log`.
 3. Open a workspace, switch to the Spec tab and back to Terminal. Predict whether your
@@ -278,15 +279,15 @@ slowly and make sure you can explain `_sanitized_env` and `close()`.
 
 **Read in this order:**
 
-1. [`backend/app/shell_env.py`](backend/app/shell_env.py) — the ONE key-stripping
-   function, now shared by the terminal and checks. Read the banner.
+1. [`backend/app/shell_env.py`](backend/app/shell_env.py) — the ONE child-environment
+   allowlist, shared by the terminal and checks. Read the banner.
 2. [`backend/app/workspaces/gitutil.py`](backend/app/workspaces/gitutil.py) — the "must
    succeed" vs "failure is fine" git split.
 3. [`backend/app/workspaces/diff.py`](backend/app/workspaces/diff.py) — tracked changes
    vs HEAD + untracked files.
 4. [`backend/app/workspaces/checks.py`](backend/app/workspaces/checks.py) — stream a
-   subprocess's output; a lock so one runs at a time. Teaches:
-   `asyncio.create_subprocess_shell` + streaming.
+   subprocess's output; a lock so one runs at a time. Teaches bounded
+   `asyncio.create_subprocess_exec` + streaming without an implicit shell.
 5. [`frontend/src/panels/rightpane/DiffTab.tsx`](frontend/src/panels/rightpane/DiffTab.tsx)
    — poll-while-visible, per-file list, Monaco diff.
 6. [`frontend/src/panels/rightpane/ChecksTab.tsx`](frontend/src/panels/rightpane/ChecksTab.tsx)
@@ -300,8 +301,8 @@ line by line — a pattern you'll reuse constantly.
 
 1. In the terminal, `echo hi > x.txt`, then open the Diff tab (don't touch Refresh).
    Predict how long until it appears (hint: the 5s poll). Time it.
-2. Add a check with command `sleep 2 && echo done`, run it, and immediately run it again.
-   Predict what happens (hint: the per-workspace lock). Watch the badges.
+2. Add a check with command `/bin/sh -c 'sleep 2; echo done'`, run it, and immediately
+   run it again. Predict what happens (hint: the per-workspace lock). Watch the badges.
 3. In `diff.py`, change `git diff HEAD` to `git diff` (drops the HEAD). Predict what the
    Diff tab shows after you *stage* a change (`git add`) in the terminal. Try it.
 
@@ -363,10 +364,41 @@ shortcut can reach it.
 **RETYPE THIS → [`frontend/src/panels/Toasts.tsx`](frontend/src/panels/Toasts.tsx).**
 Small, self-contained, and it teaches a clean self-cleaning `useEffect` timer.
 
+---
+
+## R&D Studio — configurable research organization
+
+**What this extension teaches:** how to turn a fixed crew into durable, user-defined
+departments, mission teams, agent charters, addressed tasks, findings, and bounded
+multi-agent meetings without silently granting tools.
+
+**Read in this order:**
+
+1. [`backend/app/lab/schemas.py`](backend/app/lab/schemas.py) — strict browser inputs.
+2. [`backend/app/models.py`](backend/app/models.py) — durable lab records and provenance.
+3. [`backend/app/lab/repo.py`](backend/app/lab/repo.py) — assignments, communication
+   policy, atomic run transitions, results, and audit activity.
+4. [`backend/app/lab/orchestrator.py`](backend/app/lab/orchestrator.py) — prompt-only
+   tasks and the one-contribution-plus-synthesis meeting protocol.
+5. [`frontend/src/lab/store.ts`](frontend/src/lab/store.ts) — normalized durable state
+   plus addressed live streams keyed by run ID.
+6. [`frontend/src/lab/Studio.tsx`](frontend/src/lab/Studio.tsx) — the VS Code-style shell.
+7. [`SECURITY.md`](SECURITY.md) — the capability and deployment boundary.
+
+**Exercises:**
+
+1. Create two departments and two department-scoped agents, one in each. Predict why a
+   shared meeting is rejected; then make both organization-scoped and retry.
+2. Add a new duty-card priority and inspect `_agent_prompt`. Predict where it appears in
+   the next task without changing any machine permission.
+3. Run a two-agent meeting in mock mode. Predict the exact number and order of durable
+   messages (two contributions, then one synthesis), then confirm in the UI.
+
 **All exercises (every milestone) are collected in
 [`learning/exercises.md`](learning/exercises.md).**
 
 ---
 
-*All eight milestones are complete. If you read and retype in this order, the codebase
-should hold no surprises — and the app's own mentor can explain anything that still does.*
+*All eight original milestones and the R&D Studio extension are implemented. If you
+read and retype in this order, the codebase should hold no surprises — and the app's
+own mentor can explain anything that still does.*

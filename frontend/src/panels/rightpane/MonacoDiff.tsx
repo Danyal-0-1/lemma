@@ -11,6 +11,7 @@ import { DiffEditor, type DiffOnMount } from "@monaco-editor/react";
 import { useState } from "react";
 
 import "../../lib/monaco";
+import { usePreferencesStore } from "../../store/preferencesStore";
 
 interface Selection {
   text: string;
@@ -29,6 +30,9 @@ export default function MonacoDiff({
   onExplain?: (text: string) => void;
 }) {
   const [selection, setSelection] = useState<Selection | null>(null);
+  const resolvedTheme = usePreferencesStore((state) => state.resolvedTheme);
+  const fontSize = usePreferencesStore((state) => state.editorFontSize);
+  const wordWrap = usePreferencesStore((state) => state.wordWrap);
 
   const handleMount: DiffOnMount = (diffEditor) => {
     // A diff editor is two code editors; we track selections on the modified (right) one.
@@ -49,14 +53,16 @@ export default function MonacoDiff({
       <DiffEditor
         onMount={handleMount}
         height="100%"
-        theme="vs-dark"
+        theme={resolvedTheme === "light" ? "vs" : "vs-dark"}
         original={original}
         modified={modified}
         options={{
           readOnly: true,
+          originalEditable: false,
           renderSideBySide: false,
           minimap: { enabled: false },
-          fontSize: 12,
+          fontSize,
+          wordWrap: wordWrap ? "on" : "off",
           scrollBeyondLastLine: false,
         }}
       />

@@ -12,6 +12,7 @@ import Editor, { type OnMount } from "@monaco-editor/react";
 import { useState } from "react";
 
 import "../../lib/monaco";
+import { usePreferencesStore } from "../../store/preferencesStore";
 
 /** Where a selection is, so we can float the button next to it. */
 interface Selection {
@@ -29,6 +30,10 @@ export default function MonacoView({
   onExplain?: (text: string) => void;
 }) {
   const [selection, setSelection] = useState<Selection | null>(null);
+  const resolvedTheme = usePreferencesStore((state) => state.resolvedTheme);
+  const fontSize = usePreferencesStore((state) => state.editorFontSize);
+  const minimap = usePreferencesStore((state) => state.minimap);
+  const wordWrap = usePreferencesStore((state) => state.wordWrap);
 
   const handleMount: OnMount = (editor) => {
     editor.onDidChangeCursorSelection((event) => {
@@ -48,13 +53,15 @@ export default function MonacoView({
       <Editor
         onMount={handleMount}
         height="100%"
-        theme="vs-dark"
+        theme={resolvedTheme === "light" ? "vs" : "vs-dark"}
         defaultLanguage="plaintext"
         value={content}
         options={{
           readOnly: true,
-          minimap: { enabled: false },
-          fontSize: 12,
+          domReadOnly: true,
+          minimap: { enabled: minimap },
+          fontSize,
+          wordWrap: wordWrap ? "on" : "off",
           scrollBeyondLastLine: false,
         }}
       />

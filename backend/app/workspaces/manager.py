@@ -32,9 +32,18 @@ from app.ideation import repo
 from app.ideation.schema import Spec
 from app.ideation.spec_render import render_spec_markdown
 from app.models import Workspace
-from app.settings import get_settings
+from app.settings import BACKEND_DIR, get_settings
+from app.shell_env import sanitized_env
+from app.workspaces.gitutil import GIT_EXECUTABLE
 
 logger = logging.getLogger("aicompany.workspaces")
+
+# The application repository is always available as a built-in IDE workspace.  It is
+# calculated from this installed source tree, never accepted from a request, so a
+# client cannot turn the explorer into an arbitrary-path file browser.
+PROJECT_WORKSPACE_ID = "lemma_project"
+PROJECT_ROOT = BACKEND_DIR.parent.resolve(strict=True)
+STATE_VAULT_WORKSPACE_ID = "lemma_vault"
 
 # The briefing we drop into every workspace for the coding agent to read (PROMPT.md §10).
 CLAUDE_MD = """# Mission
@@ -61,7 +70,43 @@ def _unique_dir(base: Path, slug: str) -> Path:
 
 def _git(args: list[str], cwd: Path) -> None:
     """Run a git command in `cwd`, raising if it fails (so we notice a broken scaffold)."""
-    subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True)
+    env = sanitized_env(str(cwd))
+    env.update(
+        {
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_TERMINAL_PROMPT": "0",
+        }
+    )
+    try:
+        subprocess.run(
+            [
+                GIT_EXECUTABLE,
+                "--no-pager",
+                "-c",
+                "core.fsmonitor=false",
+                "-c",
+                "core.hooksPath=/dev/null",
+                "-C",
+                str(cwd),
+                *args,
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=20,
+            env=env,
+        )
+    except subprocess.CalledProcessError as error:
+        stderr = error.stderr or ""
+        if "Xcode license" in stderr:
+            raise RuntimeError(
+                "Git is unavailable until the Xcode Command Line Tools license is "
+                "accepted in a local Terminal with `sudo xcodebuild -license`."
+            ) from error
+        raise RuntimeError("Git could not initialize the workspace") from error
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise RuntimeError("Git is unavailable or did not respond") from error
 
 
 def create_from_spec(spec_artifact_id: int) -> Workspace:
@@ -73,6 +118,9 @@ def create_from_spec(spec_artifact_id: int) -> Workspace:
     artifact = repo.get_artifact_by_id(spec_artifact_id)
     if artifact is None or artifact.kind != "spec":
         raise ValueError(f"artifact {spec_artifact_id} is not a spec")
+    session = repo.get_session_row(artifact.session_id)
+    if session is None or session.status != "approved":
+        raise ValueError("a workspace can only be created from an approved session spec")
 
     spec = Spec.model_validate_json(artifact.content_json)
 
@@ -110,7 +158,7 @@ def create_from_spec(spec_artifact_id: int) -> Workspace:
     )
 
     workspace = Workspace(
-        id=f"ws_{uuid4().hex[:8]}",
+        id=f"ws_{uuid4().hex}",
         slug=directory.name,
         path=str(directory),
         spec_artifact_id=spec_artifact_id,
@@ -127,13 +175,65 @@ def create_from_spec(spec_artifact_id: int) -> Workspace:
 def list_workspaces() -> list[Workspace]:
     """Return all workspaces, newest first — for the sidebar."""
     with get_session() as db:
-        return list(db.exec(select(Workspace).order_by(Workspace.created_at.desc())))
+        saved = list(db.exec(select(Workspace).order_by(Workspace.created_at.desc())))
+    built_in_ids = {PROJECT_WORKSPACE_ID, STATE_VAULT_WORKSPACE_ID}
+    return [
+        _project_workspace(),
+        _state_vault_workspace(),
+        *[item for item in saved if item.id not in built_in_ids],
+    ]
 
 
 def get_workspace(workspace_id: str) -> Workspace | None:
     """Return one workspace by id, or None."""
+    if workspace_id == PROJECT_WORKSPACE_ID:
+        return _project_workspace()
+    if workspace_id == STATE_VAULT_WORKSPACE_ID:
+        return _state_vault_workspace()
     with get_session() as db:
         return db.get(Workspace, workspace_id)
+
+
+def _project_workspace() -> Workspace:
+    """Return the immutable virtual row for this checked-out Lemma repository."""
+    return Workspace(
+        id=PROJECT_WORKSPACE_ID,
+        slug=PROJECT_ROOT.name,
+        path=str(PROJECT_ROOT),
+        spec_artifact_id=0,
+        status="active",
+    )
+
+
+def _state_vault_workspace() -> Workspace:
+    """Expose Lemma's automatic snapshots as a normal Source Control workspace."""
+    root = Path(os.path.expanduser(get_settings().git_vault_dir)).resolve()
+    return Workspace(
+        id=STATE_VAULT_WORKSPACE_ID,
+        slug="lemma-state-vault",
+        path=str(root),
+        spec_artifact_id=0,
+        status="active",
+    )
+
+
+def validated_workspace_path(workspace: Workspace) -> str:
+    """Return a canonical workspace path only when it remains inside the configured root."""
+    candidate = Path(workspace.path).resolve(strict=True)
+    if workspace.id == PROJECT_WORKSPACE_ID:
+        if candidate != PROJECT_ROOT or not candidate.is_dir():
+            raise ValueError("built-in project workspace path is invalid")
+        return str(candidate)
+    if workspace.id == STATE_VAULT_WORKSPACE_ID:
+        configured = Path(os.path.expanduser(get_settings().git_vault_dir)).resolve(strict=True)
+        if candidate != configured or not candidate.is_dir():
+            raise ValueError("state vault workspace path is invalid")
+        return str(candidate)
+
+    base = Path(os.path.expanduser(get_settings().workspaces_dir)).resolve(strict=True)
+    if not candidate.is_dir() or not candidate.is_relative_to(base):
+        raise ValueError("workspace path is outside the configured workspace directory")
+    return str(candidate)
 
 
 def set_workspace_status(workspace_id: str, status: str) -> Workspace | None:

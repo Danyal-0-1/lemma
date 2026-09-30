@@ -11,15 +11,40 @@
 // hard-coded URLs to update later.
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** The backend origin. In dev the frontend (:5173) calls the backend (:8000). */
-export const BACKEND_ORIGIN = "http://127.0.0.1:8000";
+import type { LabSnapshot } from "../lab/types";
+import { normalizeLabSnapshot } from "../lab/types";
 
-/** The event-stream WebSocket URL, derived from the same origin. */
-export const WS_URL = "ws://127.0.0.1:8000/ws";
+/**
+ * Resolve the backend without baking one installation layout into the bundle.
+ *
+ * Development and the lightweight Linux package serve the UI on :5173 and the
+ * private API on :8000. A single-server production bundle can serve both from the
+ * same origin. Keeping this decision here prevents an installed build from trying
+ * to contact a development URL on another machine.
+ */
+function resolveBackendOrigin(): string {
+  const configured = import.meta.env.VITE_BACKEND_ORIGIN as string | undefined;
+  if (configured?.trim()) return configured.trim().replace(/\/$/, "");
+  if (["5173", "4173"].includes(window.location.port)) {
+    return `${window.location.protocol}//${window.location.hostname}:8000`;
+  }
+  return window.location.origin;
+}
+
+export const BACKEND_ORIGIN = resolveBackendOrigin();
+
+function websocketUrl(path: string): string {
+  const url = new URL(path, `${BACKEND_ORIGIN}/`);
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  return url.toString();
+}
+
+/** The event-stream WebSocket URL, derived from the REST origin. */
+export const WS_URL = websocketUrl("ws");
 
 /** Build the raw-bytes PTY socket URL for a given terminal id. */
 export function ptyUrl(terminalId: string): string {
-  return `ws://127.0.0.1:8000/pty/${terminalId}`;
+  return websocketUrl(`pty/${encodeURIComponent(terminalId)}`);
 }
 
 /** What GET /health returns. Used to show the MOCK badge accurately. */
@@ -27,6 +52,7 @@ export interface Health {
   status: string;
   version: string;
   mock_llm: boolean;
+  enable_host_execution: boolean;
 }
 
 /** Fetch backend health once at startup, e.g. to know whether we're in mock mode. */
@@ -146,7 +172,7 @@ export async function postWorkspaceFromSpec(
     method: "POST",
   });
   if (!response.ok) {
-    throw new Error(`create workspace failed: ${response.status}`);
+    throw await responseError(response, "create workspace failed");
   }
   return (await response.json()) as { workspace_id: string; path: string; slug: string };
 }
@@ -168,7 +194,7 @@ export async function createTerminal(workspaceId: string): Promise<{ terminal_id
     body: JSON.stringify({ workspace_id: workspaceId }),
   });
   if (!response.ok) {
-    throw new Error(`create terminal failed: ${response.status}`);
+    throw await responseError(response, "create terminal failed");
   }
   return (await response.json()) as { terminal_id: string };
 }
@@ -179,7 +205,7 @@ export async function openInEditor(workspaceId: string): Promise<string> {
     method: "POST",
   });
   if (!response.ok) {
-    throw new Error(`open-in-editor failed: ${response.status}`);
+    throw await responseError(response, "open-in-editor failed");
   }
   return ((await response.json()) as { result: string }).result;
 }
@@ -206,7 +232,7 @@ export async function revealWorkspace(workspaceId: string): Promise<string> {
     method: "POST",
   });
   if (!response.ok) {
-    throw new Error(`reveal failed: ${response.status}`);
+    throw await responseError(response, "reveal failed");
   }
   return ((await response.json()) as { result: string }).result;
 }
@@ -247,6 +273,95 @@ export async function getFiles(workspaceId: string): Promise<string[]> {
   return ((await response.json()) as { files: string[] }).files;
 }
 
+export interface WorkspaceTreeNode {
+  name: string;
+  path: string;
+  type: "directory" | "file";
+  children?: WorkspaceTreeNode[];
+}
+
+/** Fetch a bounded, server-validated tree rooted inside the selected workspace. */
+export async function getWorkspaceTree(
+  workspaceId: string,
+): Promise<{ root: WorkspaceTreeNode; truncated: boolean }> {
+  const response = await fetch(`${BACKEND_ORIGIN}/api/workspaces/${workspaceId}/tree`);
+  if (!response.ok) throw await responseError(response, "workspace tree failed");
+  return (await response.json()) as { root: WorkspaceTreeNode; truncated: boolean };
+}
+
+export interface GitChange {
+  path: string;
+  original_path: string | null;
+  index: string;
+  working_tree: string;
+  staged: boolean;
+  status: string;
+  conflict: boolean;
+}
+
+export interface GitStatus {
+  repository: boolean;
+  branch: string | null;
+  detached: boolean;
+  upstream: string | null;
+  ahead: number;
+  behind: number;
+  clean: boolean;
+  changes: GitChange[];
+}
+
+export async function getGitStatus(workspaceId: string): Promise<GitStatus> {
+  const response = await fetch(`${BACKEND_ORIGIN}/api/workspaces/${workspaceId}/git/status`);
+  if (!response.ok) throw await responseError(response, "git status failed");
+  return (await response.json()) as GitStatus;
+}
+
+export async function getGitDiff(
+  workspaceId: string,
+  path: string,
+  staged = false,
+): Promise<{ path: string; staged: boolean; patch: string; truncated: boolean }> {
+  const query = new URLSearchParams({ path, staged: String(staged) });
+  const response = await fetch(`${BACKEND_ORIGIN}/api/workspaces/${workspaceId}/git/diff?${query}`);
+  if (!response.ok) throw await responseError(response, "git diff failed");
+  return (await response.json()) as { path: string; staged: boolean; patch: string; truncated: boolean };
+}
+
+async function gitMutation<T>(workspaceId: string, action: string, body: object): Promise<T> {
+  const response = await fetch(`${BACKEND_ORIGIN}/api/workspaces/${workspaceId}/git/${action}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) throw await responseError(response, `git ${action} failed`);
+  return (await response.json()) as T;
+}
+
+export async function stageGitPaths(workspaceId: string, paths: string[]): Promise<GitStatus> {
+  const payload = await gitMutation<{ ok: true; status: GitStatus }>(workspaceId, "stage", { paths });
+  return payload.status;
+}
+
+export async function unstageGitPaths(workspaceId: string, paths: string[]): Promise<GitStatus> {
+  const payload = await gitMutation<{ ok: true; status: GitStatus }>(workspaceId, "unstage", { paths });
+  return payload.status;
+}
+
+export async function commitGitChanges(
+  workspaceId: string,
+  message: string,
+): Promise<{ commit: string; summary: string; status: GitStatus }> {
+  return await gitMutation(workspaceId, "commit", { message });
+}
+
+export async function pushGitBranch(
+  workspaceId: string,
+  remote: string,
+  branch: string,
+): Promise<{ remote: string; branch: string; output: string; status: GitStatus }> {
+  return await gitMutation(workspaceId, "push", { remote, branch, confirm: true });
+}
+
 /** One saved verification command. */
 export interface Check {
   id: string;
@@ -277,7 +392,7 @@ export async function runCheck(workspaceId: string, checkId: string): Promise<vo
     `${BACKEND_ORIGIN}/api/workspaces/${workspaceId}/checks/${checkId}/run`,
     { method: "POST" },
   );
-  if (!response.ok) throw new Error(`run check failed: ${response.status}`);
+  if (!response.ok) throw await responseError(response, "run check failed");
 }
 
 // --- Explain / mentor (the teaching layer, M7) --------------------------------
@@ -316,4 +431,83 @@ export async function exportSession(sessionId: string): Promise<void> {
   anchor.download = `${sessionId}.md`;
   anchor.click();
   URL.revokeObjectURL(url);
+}
+
+// --- R&D Studio -------------------------------------------------------------
+
+type LabEntity = "departments" | "agents" | "projects" | "tasks" | "meetings";
+
+/** Read a useful backend error without leaking a full HTML/server response into the UI. */
+async function responseError(response: Response, fallback: string): Promise<Error> {
+  try {
+    const payload = (await response.json()) as { detail?: unknown; message?: unknown };
+    const detail = typeof payload.detail === "string" ? payload.detail : payload.message;
+    if (typeof detail === "string" && detail.trim()) return new Error(detail);
+  } catch {
+    // A proxy or crashed dev server may return non-JSON; the status remains actionable.
+  }
+  return new Error(`${fallback} (${response.status})`);
+}
+
+async function labRequest<T>(path: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(`${BACKEND_ORIGIN}/api/lab${path}`, {
+    ...init,
+    headers: init?.body
+      ? { "Content-Type": "application/json", ...(init.headers ?? {}) }
+      : init?.headers,
+  });
+  if (!response.ok) throw await responseError(response, "R&D Studio request failed");
+  return (await response.json()) as T;
+}
+
+/** Load the complete small-lab snapshot used to hydrate the normalized UI store. */
+export async function getLabSnapshot(): Promise<LabSnapshot> {
+  const raw = await labRequest<unknown>("/snapshot");
+  return normalizeLabSnapshot(raw);
+}
+
+/** Create one Lab entity. Payloads remain schema-shaped snake_case model inputs. */
+export async function createLabEntity<T>(entity: LabEntity, payload: object): Promise<T> {
+  return await labRequest<T>(`/${entity}`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+/** Partially update one Lab entity. */
+export async function updateLabEntity<T>(
+  entity: LabEntity,
+  id: string,
+  payload: object,
+): Promise<T> {
+  return await labRequest<T>(`/${entity}/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+}
+
+export interface LabRunResponse {
+  run_id: string;
+  status: string;
+  task_id?: string;
+  meeting_id?: string;
+}
+
+/** Start a task run. Instructions are explicit; no open file is attached implicitly. */
+export async function runLabTask(taskId: string, instructions = ""): Promise<LabRunResponse> {
+  return await labRequest<LabRunResponse>(`/tasks/${encodeURIComponent(taskId)}/run`, {
+    method: "POST",
+    body: JSON.stringify({ instructions }),
+  });
+}
+
+/** Start a bounded meeting run. */
+export async function runLabMeeting(
+  meetingId: string,
+  instructions = "",
+): Promise<LabRunResponse> {
+  return await labRequest<LabRunResponse>(`/meetings/${encodeURIComponent(meetingId)}/run`, {
+    method: "POST",
+    body: JSON.stringify({ instructions }),
+  });
 }

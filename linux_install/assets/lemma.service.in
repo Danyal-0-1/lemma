@@ -1,0 +1,29 @@
+[Unit]
+Description=Lemma local R&D studio
+Documentation=file://@INSTALL_ROOT@/share/doc/lemma-linux/README.md
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=@INSTALL_ROOT@/bin/lemma-server
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=15
+UMask=0077
+
+# Lemma is deliberately local-only. These controls reduce what a compromised web
+# process can change while still allowing the optional terminal to work in the
+# user's own workspaces.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=default.target

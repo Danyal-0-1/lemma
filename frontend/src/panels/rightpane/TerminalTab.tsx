@@ -15,18 +15,18 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { FitAddon } from "@xterm/addon-fit";
-import { Terminal } from "@xterm/xterm";
+import { Terminal, type ITheme } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { useEffect, useRef } from "react";
 
 import { createTerminal, ptyUrl } from "../../lib/api";
+import { usePreferencesStore, type ResolvedTheme } from "../../store/preferencesStore";
 
 // VS Code Dark+ terminal colors, matching the rest of the app.
-const TERMINAL_THEME = {
-  background: "#1e1e1e",
-  foreground: "#cccccc",
-  cursor: "#cccccc",
-  selectionBackground: "#264f78",
+const TERMINAL_THEMES: Record<ResolvedTheme, ITheme> = {
+  dark: { background: "#1e1e1e", foreground: "#cccccc", cursor: "#cccccc", selectionBackground: "#264f78" },
+  light: { background: "#ffffff", foreground: "#3b3b3b", cursor: "#3b3b3b", selectionBackground: "#add6ff" },
+  gray: { background: "#262626", foreground: "#d4d4d4", cursor: "#d4d4d4", selectionBackground: "#555555" },
 };
 
 /** The Terminal tab. `active` tells us when it's the visible tab (so we can refit). */
@@ -37,6 +37,8 @@ export default function TerminalTab({
   workspaceId: string;
   active: boolean;
 }) {
+  const resolvedTheme = usePreferencesStore((state) => state.resolvedTheme);
+  const fontSize = usePreferencesStore((state) => state.editorFontSize);
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -49,8 +51,8 @@ export default function TerminalTab({
 
     const term = new Terminal({
       fontFamily: "'JetBrains Mono', 'SF Mono', Menlo, monospace",
-      fontSize: 13,
-      theme: TERMINAL_THEME,
+      fontSize,
+      theme: TERMINAL_THEMES[resolvedTheme],
       cursorBlink: true,
     });
     const fit = new FitAddon();
@@ -110,6 +112,16 @@ export default function TerminalTab({
       wsRef.current = null;
     };
   }, [workspaceId]);
+
+  useEffect(() => {
+    if (termRef.current) termRef.current.options.theme = TERMINAL_THEMES[resolvedTheme];
+  }, [resolvedTheme]);
+
+  useEffect(() => {
+    if (!termRef.current) return;
+    termRef.current.options.fontSize = fontSize;
+    fitRef.current?.fit();
+  }, [fontSize]);
 
   // When this tab becomes visible again it had zero size while hidden, so refit.
   useEffect(() => {

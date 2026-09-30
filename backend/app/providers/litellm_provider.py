@@ -30,6 +30,8 @@ logger = logging.getLogger("aicompany.providers.litellm")
 
 # One model call may not exceed this many seconds (PROMPT.md §13).
 REQUEST_TIMEOUT_SECONDS = 120
+# A provider-side generation ceiling is the most reliable spend/memory bound.
+MAX_OUTPUT_TOKENS = 8_192
 # How many times to retry establishing the stream after a transient failure.
 MAX_RETRIES = 3
 
@@ -78,6 +80,7 @@ class LiteLLMProvider:
                     messages=payload,
                     stream=True,
                     stream_options={"include_usage": True},
+                    max_tokens=MAX_OUTPUT_TOKENS,
                     timeout=REQUEST_TIMEOUT_SECONDS,
                 )
             except TRANSIENT_ERRORS as error:

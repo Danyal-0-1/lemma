@@ -37,7 +37,9 @@ def compute_diff(path: str) -> dict:
     files: list[dict] = []
 
     # Tracked changes since the last commit. --numstat prints "adds<TAB>dels<TAB>path".
-    numstat = git_output(["diff", "HEAD", "--numstat"], directory)
+    numstat = git_output(
+        ["diff", "--no-ext-diff", "--no-textconv", "HEAD", "--numstat"], directory
+    )
     for line in numstat.splitlines():
         parts = line.split("\t")
         if len(parts) != 3:

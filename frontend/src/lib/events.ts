@@ -114,3 +114,39 @@ export interface CheckFinishedPayload {
   exit_code: number;
   duration_ms: number;
 }
+
+// --- R&D Studio events ------------------------------------------------------
+
+/** Common addressing carried by every Lab run event. */
+export interface LabRunAddress {
+  run_id: string;
+  task_id?: string | null;
+  meeting_id?: string | null;
+  agent_id?: string | null;
+}
+
+export interface LabRunStartedPayload extends LabRunAddress {
+  status?: string;
+}
+
+export interface LabTurnStartedPayload extends LabRunAddress {
+  turn_id?: string;
+}
+
+export interface LabTextDeltaPayload extends LabRunAddress {
+  turn_id?: string;
+  text: string;
+}
+
+export interface LabTurnCompletedPayload extends LabRunAddress {
+  turn_id?: string;
+}
+
+export interface LabRunCompletedPayload extends LabRunAddress {
+  status?: string;
+}
+
+export interface LabRunFailedPayload extends LabRunAddress {
+  error?: string;
+  message?: string;
+}

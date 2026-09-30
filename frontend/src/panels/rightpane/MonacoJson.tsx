@@ -15,19 +15,26 @@ import Editor from "@monaco-editor/react";
 // Side-effect import: configures Monaco's offline workers before the editor mounts.
 // It lives here so it's part of this lazily-loaded chunk, not the initial bundle.
 import "../../lib/monaco";
+import { usePreferencesStore } from "../../store/preferencesStore";
 
 /** Read-only Monaco showing `value` as formatted JSON. */
 export default function MonacoJson({ value }: { value: unknown }) {
+  const resolvedTheme = usePreferencesStore((state) => state.resolvedTheme);
+  const fontSize = usePreferencesStore((state) => state.editorFontSize);
+  const minimap = usePreferencesStore((state) => state.minimap);
+  const wordWrap = usePreferencesStore((state) => state.wordWrap);
   return (
     <Editor
       height="100%"
       defaultLanguage="json"
-      theme="vs-dark"
+      theme={resolvedTheme === "light" ? "vs" : "vs-dark"}
       value={JSON.stringify(value, null, 2)}
       options={{
         readOnly: true,
-        minimap: { enabled: false },
-        fontSize: 12,
+        domReadOnly: true,
+        minimap: { enabled: minimap },
+        fontSize,
+        wordWrap: wordWrap ? "on" : "off",
         scrollBeyondLastLine: false,
       }}
     />

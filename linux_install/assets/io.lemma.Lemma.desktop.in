@@ -1,0 +1,18 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Lemma
+GenericName=R&D Agent Studio
+Comment=Local-first research teams and Git workbench
+Exec=@LAUNCHER@ open
+TryExec=@LAUNCHER@
+Icon=io.lemma.Lemma
+Terminal=false
+StartupNotify=true
+Categories=Development;IDE;Science;
+Keywords=research;agents;git;ide;development;
+Actions=NewWindow;
+
+[Desktop Action NewWindow]
+Name=Open Lemma
+Exec=@LAUNCHER@ open

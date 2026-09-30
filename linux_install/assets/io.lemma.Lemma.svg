@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Lemma">
+  <rect width="512" height="512" rx="92" fill="#000000"/>
+  <text x="256" y="397"
+        fill="#ffffff"
+        font-family="DejaVu Sans, Liberation Sans, Arial, sans-serif"
+        font-size="392"
+        font-weight="900"
+        text-anchor="middle">λ</text>
+</svg>

@@ -14,6 +14,12 @@
 import { useAppStore } from "../store/appStore";
 import { postExplain } from "./api";
 
+const MAX_MENTOR_CONTEXT_CHARS = 50_000;
+
+function bounded(value?: string): string | undefined {
+  return value?.slice(0, MAX_MENTOR_CONTEXT_CHARS);
+}
+
 /** Ask the mentor. `userLabel` is the bubble we show for what the founder asked. */
 export async function askMentor(options: {
   userLabel: string;
@@ -26,9 +32,9 @@ export async function askMentor(options: {
 
   const context = store.mentorContext;
   await postExplain({
-    content: options.content,
+    content: bounded(options.content),
     question: options.question,
-    context: context?.content,
+    context: bounded(context?.content),
     context_label: context?.label,
   });
 }

@@ -10,7 +10,7 @@
 # a file named "dev" in this folder would make `make dev` do nothing.
 # ─────────────────────────────────────────────────────────────────────────────
 
-.PHONY: help install backend frontend dev test lint
+.PHONY: help install backend frontend dev test lint linux-bundle linux-deb
 
 # Running `make` with no target prints this help (the first target is the default,
 # but we make `help` explicit for clarity).
@@ -22,6 +22,8 @@ help:
 	@echo "  make dev       Run BOTH together (this is the one you want)"
 	@echo "  make test      Run backend pytest + frontend typecheck/build"
 	@echo "  make lint      Run ruff (backend) + tsc (frontend)"
+	@echo "  make linux-bundle                 Build an offline Linux release"
+	@echo "  make linux-deb BUNDLE=<directory> Wrap a Linux release in a .deb"
 
 # --- Dependency installation ------------------------------------------------
 # uv sync reads backend/pyproject.toml and creates a locked virtualenv.
@@ -51,3 +53,12 @@ test:
 lint:
 	cd backend && uv run ruff check .
 	cd frontend && npm run typecheck
+
+# --- Linux release packaging ------------------------------------------------
+# See linux_install/README.md for cache preparation and compatibility details.
+linux-bundle:
+	./linux_install/build.sh
+
+linux-deb:
+	@test -n "$(BUNDLE)" || { echo "Usage: make linux-deb BUNDLE=linux_install/dist/lemma-<version>-linux-<arch>"; exit 2; }
+	./linux_install/build-deb.sh --bundle "$(BUNDLE)"

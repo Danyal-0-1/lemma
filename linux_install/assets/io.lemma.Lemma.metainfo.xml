@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.lemma.Lemma</id>
+  <name>Lemma</name>
+  <summary>Local-first R&amp;D agent studio and Git workbench</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <description>
+    <p>
+      Lemma is a local-first environment for organizing research-agent teams,
+      reviewing their findings, and working with Git-tracked project files.
+    </p>
+    <p>
+      The backend and browser interface bind only to the loopback interface. Host
+      command execution remains disabled until the local operator explicitly opts in.
+    </p>
+  </description>
+  <launchable type="desktop-id">io.lemma.Lemma.desktop</launchable>
+  <provides>
+    <binary>lemma</binary>
+  </provides>
+  <categories>
+    <category>Development</category>
+    <category>IDE</category>
+  </categories>
+  <url type="homepage">https://github.com/Danyal-0-1/lemma</url>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="0.2.0" date="2026-09-28"/>
+  </releases>
+</component>

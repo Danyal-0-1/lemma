@@ -28,6 +28,27 @@ interface Handlers {
 // Backoff schedule: start at 1s, double each attempt, never wait more than 15s.
 const BASE_DELAY_MS = 1000;
 const MAX_DELAY_MS = 15000;
+const MAX_EVENT_CHARS = 5_000_000;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** Validate untrusted socket JSON before any store reads fields from it. */
+function parseEvent(data: unknown): Event | null {
+  if (typeof data !== "string" || data.length > MAX_EVENT_CHARS) return null;
+  try {
+    const value: unknown = JSON.parse(data);
+    if (!isRecord(value) || !isRecord(value.payload)) return null;
+    if (value.v !== 1 || !Number.isSafeInteger(value.seq) || Number(value.seq) < 1) return null;
+    if (typeof value.ts !== "string" || typeof value.event !== "string") return null;
+    if (value.event.length === 0 || value.event.length > 120) return null;
+    if (value.session_id !== null && typeof value.session_id !== "string") return null;
+    return value as unknown as Event;
+  } catch {
+    return null;
+  }
+}
 
 export class EventSocket {
   private ws: WebSocket | null = null;
@@ -64,8 +85,12 @@ export class EventSocket {
       this.handlers.onStatus("open");
     };
 
-    ws.onmessage = (message: MessageEvent<string>) => {
-      const event = JSON.parse(message.data) as Event;
+    ws.onmessage = (message: MessageEvent<unknown>) => {
+      const event = parseEvent(message.data);
+      if (event === null) {
+        console.warn("[ws] ignored malformed event frame");
+        return;
+      }
       // Gap detection: after the first message, each seq should be exactly +1.
       // A gap means we dropped a frame — worth a warning while learning the protocol.
       if (this.lastSeq !== 0 && event.seq !== this.lastSeq + 1) {

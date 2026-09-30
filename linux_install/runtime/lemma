@@ -1,0 +1,198 @@
+#!/usr/bin/env bash
+# Desktop/CLI entry point for the installed Linux application.
+set -euo pipefail
+
+SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
+INSTALL_ROOT="$(cd "$(dirname "$SCRIPT_PATH")/.." && pwd -P)"
+RUNTIME_HOME="${XDG_RUNTIME_DIR:-/tmp/lemma-runtime-$UID}"
+STATE_HOME="${XDG_STATE_HOME:-$HOME/.local/state}"
+CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
+LOG_DIR="$STATE_HOME/lemma"
+LOG_FILE="$LOG_DIR/server.log"
+PID_FILE="$RUNTIME_HOME/lemma-server.pid"
+URL="http://127.0.0.1:5173"
+
+usage() {
+  cat <<'EOF'
+Usage: lemma [open|start|stop|restart|status|logs|config|doctor|help]
+
+  open      Start Lemma if necessary and open it in the default browser (default)
+  start     Start the local background service without opening a browser
+  stop      Stop the local service
+  restart   Restart the local service
+  status    Show service and health status
+  logs      Follow the service log
+  config    Print the private configuration-file path
+  doctor    Check the installation, runtime, Git, and browser integration
+EOF
+}
+
+health_ok() {
+  local python_bin
+  if [[ -n "${LEMMA_PYTHON:-}" ]]; then
+    python_bin="$(command -v -- "$LEMMA_PYTHON" 2>/dev/null || true)"
+  else
+    python_bin="$(command -v "python$PYTHON_ABI" 2>/dev/null || \
+      command -v python3 2>/dev/null || true)"
+  fi
+  [[ -n "$python_bin" ]] || return 1
+  LEMMA_EXPECTED_VERSION="$VERSION" "$python_bin" -I -B - <<'PY' >/dev/null 2>&1
+import json
+import os
+import urllib.request
+
+opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+with opener.open("http://127.0.0.1:8000/health", timeout=0.8) as response:
+    payload = json.load(response)
+assert payload.get("status") == "ok"
+assert payload.get("version") == os.environ["LEMMA_EXPECTED_VERSION"]
+with opener.open("http://127.0.0.1:5173/", timeout=0.8) as response:
+    assert response.status == 200
+    assert response.headers.get_content_type() == "text/html"
+    assert b'id="root"' in response.read(256 * 1024)
+PY
+}
+
+has_user_unit() {
+  command -v systemctl >/dev/null 2>&1 && \
+    systemctl --user cat lemma.service >/dev/null 2>&1
+}
+
+start_service() {
+  if health_ok; then
+    printf 'Lemma is already running at %s\n' "$URL"
+    return
+  fi
+  install -d -m 700 -- "$RUNTIME_HOME" "$LOG_DIR" "$CONFIG_HOME/lemma"
+  if has_user_unit; then
+    systemctl --user start lemma.service
+  else
+    nohup "$INSTALL_ROOT/bin/lemma-server" >> "$LOG_FILE" 2>&1 &
+  fi
+
+  local attempt
+  for attempt in $(seq 1 60); do
+    if health_ok; then
+      printf 'Lemma is running at %s\n' "$URL"
+      return
+    fi
+    sleep 0.25
+  done
+  printf 'Lemma did not become healthy. Review: %s logs\n' "$0" >&2
+  return 1
+}
+
+fallback_pid() {
+  [[ -r "$PID_FILE" ]] || return 1
+  local pid
+  pid="$(tr -cd '0-9' < "$PID_FILE")"
+  [[ -n "$pid" ]] || return 1
+  [[ -r "/proc/$pid/cmdline" ]] || return 1
+  local command_line
+  command_line="$(tr '\0' ' ' < "/proc/$pid/cmdline")"
+  [[ "$command_line" == *"$INSTALL_ROOT/bin/lemma-server"* ]] || return 1
+  printf '%s\n' "$pid"
+}
+
+stop_service() {
+  if has_user_unit && systemctl --user is-active --quiet lemma.service; then
+    systemctl --user stop lemma.service
+    printf 'Lemma stopped.\n'
+    return
+  fi
+  local pid
+  pid="$(fallback_pid 2>/dev/null || true)"
+  if [[ -n "$pid" ]]; then
+    kill -TERM "$pid"
+    local attempt
+    for attempt in $(seq 1 40); do
+      kill -0 "$pid" 2>/dev/null || break
+      sleep 0.25
+    done
+    if kill -0 "$pid" 2>/dev/null; then
+      printf 'Lemma did not stop after 10 seconds (PID %s).\n' "$pid" >&2
+      return 1
+    fi
+    printf 'Lemma stopped.\n'
+  else
+    printf 'Lemma is not running.\n'
+  fi
+}
+
+open_browser() {
+  if command -v xdg-open >/dev/null 2>&1; then
+    nohup xdg-open "$URL" >/dev/null 2>&1 &
+  elif command -v gio >/dev/null 2>&1; then
+    nohup gio open "$URL" >/dev/null 2>&1 &
+  else
+    printf 'Open %s in your browser.\n' "$URL"
+  fi
+}
+
+show_logs() {
+  if has_user_unit; then
+    exec journalctl --user --unit lemma.service --follow --lines 100
+  fi
+  if [[ -f "$LOG_FILE" ]]; then
+    exec tail -n 100 -f -- "$LOG_FILE"
+  fi
+  printf 'No Lemma log exists yet.\n'
+}
+
+command_name="${1:-open}"
+if [[ "$command_name" == "help" || "$command_name" == "-h" || \
+      "$command_name" == "--help" ]]; then
+  usage
+  exit 0
+fi
+[[ -r "$INSTALL_ROOT/VERSION" ]] || {
+  printf 'Lemma installation is incomplete: VERSION is missing.\n' >&2
+  exit 1
+}
+[[ -r "$INSTALL_ROOT/PYTHON_ABI" ]] || {
+  printf 'Lemma installation is incomplete: PYTHON_ABI is missing.\n' >&2
+  exit 1
+}
+VERSION="$(tr -d '\r\n' < "$INSTALL_ROOT/VERSION")"
+PYTHON_ABI="$(tr -d '\r\n' < "$INSTALL_ROOT/PYTHON_ABI")"
+case "$command_name" in
+  open)
+    start_service
+    open_browser
+    ;;
+  start)
+    start_service
+    ;;
+  stop)
+    stop_service
+    ;;
+  restart)
+    stop_service
+    start_service
+    ;;
+  status)
+    if health_ok; then
+      printf 'Lemma is healthy at %s\n' "$URL"
+    elif has_user_unit; then
+      systemctl --user --no-pager status lemma.service || true
+      exit 1
+    else
+      printf 'Lemma is not running.\n'
+      exit 1
+    fi
+    ;;
+  logs)
+    show_logs
+    ;;
+  config)
+    printf '%s\n' "$CONFIG_HOME/lemma/.env"
+    ;;
+  doctor)
+    exec "$INSTALL_ROOT/bin/lemma-doctor"
+    ;;
+  *)
+    printf 'Unknown command: %s\n\n' "$command_name" >&2
+    usage >&2
+    exit 2
+    ;;
+esac

@@ -22,6 +22,19 @@ import { askMentor } from "../lib/mentor";
 import { useAppStore } from "../store/appStore";
 import ApprovalBar from "./ApprovalBar";
 
+const SAFE_MARKDOWN_COMPONENTS = {
+  a(props: React.ComponentPropsWithoutRef<"a"> & { node?: unknown }) {
+    const { node, ...linkProps } = props;
+    void node;
+    return <a {...linkProps} target="_blank" rel="noopener noreferrer nofollow" />;
+  },
+  img(props: React.ComponentPropsWithoutRef<"img"> & { node?: unknown }) {
+    const { node, alt } = props;
+    void node;
+    return <span className="text-muted">[Remote image omitted{alt ? `: ${alt}` : ""}]</span>;
+  },
+};
+
 // Display name + Tailwind text-color class for each speaker (colors from theme.css).
 const ROLE_META: Record<Role, { label: string; className: string }> = {
   generator: { label: "Generator", className: "text-role-generator" },
@@ -139,7 +152,12 @@ export default function Conversation() {
                     {turn.streaming && <span className="ml-2 text-muted">▍</span>}
                   </div>
                   <div className="md text-fg">
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{turn.text}</ReactMarkdown>
+                    <ReactMarkdown
+                      remarkPlugins={[remarkGfm]}
+                      components={SAFE_MARKDOWN_COMPONENTS}
+                    >
+                      {turn.text}
+                    </ReactMarkdown>
                   </div>
                 </div>
               );

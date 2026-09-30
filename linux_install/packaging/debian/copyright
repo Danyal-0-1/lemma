@@ -1,0 +1,57 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: Lemma
+Source: https://github.com/Danyal-0-1/lemma
+
+Files: BUILD_INFO
+ PYTHON_ABI
+ VERSION
+ manifest.sha256
+ install.sh
+ uninstall.sh
+ bin/*
+ libexec/*
+ share/applications/*
+ share/doc/lemma-linux/LICENSE
+ share/doc/lemma-linux/README.md
+ share/doc/lemma-linux/THIRD_PARTY_NOTICES.md
+ share/icons/*
+ share/lemma/app/*
+ share/metainfo/*
+ share/systemd/*
+Copyright: 2026 Danyal-0-1
+License: MIT
+ Permission is hereby granted, free of charge, to any person obtaining a copy
+ of this software and associated documentation files (the "Software"), to deal
+ in the Software without restriction, including without limitation the rights
+ to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ copies of the Software, and to permit persons to whom the Software is
+ furnished to do so, subject to the following conditions:
+ .
+ The above copyright notice and this permission notice shall be included in all
+ copies or substantial portions of the Software.
+ .
+ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ SOFTWARE.
+
+Files: share/lemma/python/*
+ share/lemma/web/*
+ share/doc/lemma-linux/third-party/*
+Copyright: See the metadata and notices shipped with each bundled distribution
+License: various
+ The compiled web application and vendored Python runtime include third-party
+ components under their respective licenses; this paragraph does not claim
+ that those components are MIT-licensed.
+ .
+ JavaScript and Python inventories are recorded in
+ share/doc/lemma-linux/THIRD_PARTY_NOTICES.md. JavaScript license texts are in
+ share/doc/lemma-linux/third-party/javascript/node_modules/. Python wheel
+ license texts remain in share/lemma/python/*.dist-info/licenses/ or alongside
+ their distribution metadata as share/lemma/python/*.dist-info/LICENSE*.
+ .
+ All paths in this file are bundle-relative; the Debian package installs the
+ bundle below /opt/lemma.

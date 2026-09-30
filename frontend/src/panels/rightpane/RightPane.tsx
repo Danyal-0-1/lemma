@@ -61,6 +61,7 @@ function BuildPane({ workspaceId, slug }: { workspaceId: string; slug: string })
   // Lifted into the store so keyboard shortcuts (Cmd/Ctrl+Shift+D/T/C) can switch tabs.
   const tab = useAppStore((s) => s.buildTab);
   const setTab = useAppStore((s) => s.setBuildTab);
+  const hostExecution = useAppStore((s) => s.hostExecutionEnabled);
 
   return (
     <section className="flex h-full flex-col bg-panel">
@@ -71,6 +72,8 @@ function BuildPane({ workspaceId, slug }: { workspaceId: string; slug: string })
           <button
             type="button"
             onClick={() => openInEditor(workspaceId)}
+            disabled={!hostExecution}
+            title={hostExecution ? "Open in editor" : "Set ENABLE_HOST_EXECUTION=true to unlock"}
             className="rounded border border-line px-2 py-0.5 text-fg hover:bg-line"
           >
             Open in editor
@@ -78,6 +81,8 @@ function BuildPane({ workspaceId, slug }: { workspaceId: string; slug: string })
           <button
             type="button"
             onClick={() => revealWorkspace(workspaceId)}
+            disabled={!hostExecution}
+            title={hostExecution ? "Reveal workspace" : "Set ENABLE_HOST_EXECUTION=true to unlock"}
             className="rounded border border-line px-2 py-0.5 text-fg hover:bg-line"
           >
             Reveal
@@ -96,13 +101,22 @@ function BuildPane({ workspaceId, slug }: { workspaceId: string; slug: string })
           the other tabs mount on demand and get an `active` flag for their fetching. */}
       <div className="min-h-0 flex-1">
         <div className="h-full" style={{ display: tab === "terminal" ? "block" : "none" }}>
-          <Suspense fallback={<p className="p-3 text-muted">Loading terminal…</p>}>
-            <TerminalTab workspaceId={workspaceId} active={tab === "terminal"} />
-          </Suspense>
+          {hostExecution ? (
+            <Suspense fallback={<p className="p-3 text-muted">Loading terminal…</p>}>
+              <TerminalTab workspaceId={workspaceId} active={tab === "terminal"} />
+            </Suspense>
+          ) : (
+            <div className="flex h-full flex-col items-center justify-center gap-2 p-6 text-center">
+              <strong className="text-fg">Host terminal locked</strong>
+              <p className="max-w-sm text-muted">Research agents never receive shell access. To use this trusted-human terminal, explicitly set <code>ENABLE_HOST_EXECUTION=true</code> and restart the backend.</p>
+            </div>
+          )}
         </div>
         {tab === "diff" && <DiffTab workspaceId={workspaceId} active />}
         {tab === "files" && <FilesTab workspaceId={workspaceId} active />}
-        {tab === "checks" && <ChecksTab workspaceId={workspaceId} active />}
+        {tab === "checks" && (hostExecution ? <ChecksTab workspaceId={workspaceId} active /> : (
+          <div className="flex h-full flex-col items-center justify-center gap-2 p-6 text-center"><strong className="text-fg">Verification commands locked</strong><p className="max-w-sm text-muted">Set <code>ENABLE_HOST_EXECUTION=true</code> only when you intend to execute trusted local commands.</p></div>
+        ))}
         {tab === "spec" && <SpecTab />}
       </div>
     </section>

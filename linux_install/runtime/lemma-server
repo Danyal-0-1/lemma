@@ -1,0 +1,173 @@
+#!/usr/bin/env bash
+# Run the production backend and static frontend as one supervised local service.
+set -euo pipefail
+umask 077
+
+SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
+INSTALL_ROOT="$(cd "$(dirname "$SCRIPT_PATH")/.." && pwd -P)"
+VERSION="$(tr -d '\r\n' < "$INSTALL_ROOT/VERSION")"
+PYTHON_ABI="$(tr -d '\r\n' < "$INSTALL_ROOT/PYTHON_ABI")"
+
+DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
+CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
+STATE_HOME="${XDG_STATE_HOME:-$HOME/.local/state}"
+RUNTIME_HOME="${XDG_RUNTIME_DIR:-/tmp/lemma-runtime-$UID}"
+LEMMA_DATA="$DATA_HOME/lemma"
+LEMMA_CONFIG="$CONFIG_HOME/lemma"
+LEMMA_STATE="$STATE_HOME/lemma"
+USER_APP="$LEMMA_DATA/app-$VERSION"
+PERSISTENT_DB="$LEMMA_DATA/data"
+CONFIG_FILE="$LEMMA_CONFIG/.env"
+PID_FILE="$RUNTIME_HOME/lemma-server.pid"
+
+die() {
+  printf 'lemma-server: ERROR: %s\n' "$*" >&2
+  exit 1
+}
+
+((BASH_VERSINFO[0] > 4 || \
+  (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 3))) || \
+  die "Bash 4.3 or newer is required"
+
+for required in "$INSTALL_ROOT/share/lemma/app" "$INSTALL_ROOT/share/lemma/web" \
+  "$INSTALL_ROOT/share/lemma/python"; do
+  [[ -d "$required" ]] || die "installed payload is incomplete: $required"
+done
+
+# XDG_RUNTIME_DIR is normally private already. The fallback is explicitly checked so
+# a pre-created /tmp symlink cannot redirect the lock or PID file.
+if [[ -L "$RUNTIME_HOME" ]]; then
+  die "runtime directory must not be a symbolic link: $RUNTIME_HOME"
+fi
+install -d -m 700 -- "$RUNTIME_HOME" "$LEMMA_DATA" "$LEMMA_CONFIG" "$LEMMA_STATE" \
+  "$PERSISTENT_DB" "$HOME/ai-company-workspaces"
+[[ "$(stat -c '%u' -- "$RUNTIME_HOME")" == "$UID" ]] || \
+  die "runtime directory is not owned by the current user"
+
+# Exactly one supervisor may own the fixed loopback ports.
+command -v flock >/dev/null 2>&1 || die "flock is required (usually provided by util-linux)"
+exec 9>"$RUNTIME_HOME/lemma-server.lock"
+flock -n 9 || die "another Lemma server is already running"
+printf '%s\n' "$$" > "$PID_FILE"
+
+cleanup_pid() {
+  rm -f -- "$PID_FILE"
+}
+trap cleanup_pid EXIT
+
+# Make a user-writable, versioned source tree. The application database is symlinked
+# to stable XDG storage so upgrades do not discard research history.
+if [[ ! -d "$USER_APP" ]]; then
+  temp_app="$LEMMA_DATA/.app-$VERSION.tmp.$$"
+  [[ ! -e "$temp_app" ]] || die "temporary application path already exists"
+  mkdir -m 700 -- "$temp_app"
+  cp -a -- "$INSTALL_ROOT/share/lemma/app/." "$temp_app/"
+
+  if command -v git >/dev/null 2>&1; then
+    GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0 \
+      git -c core.hooksPath=/dev/null -C "$temp_app" init -q
+    GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0 \
+      git -c core.hooksPath=/dev/null -C "$temp_app" add -A
+    GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0 \
+      git -c core.hooksPath=/dev/null -c commit.gpgSign=false \
+      -c user.name=Lemma -c user.email=noreply@lemma.local \
+      -C "$temp_app" commit -q -m "chore: installed Lemma $VERSION"
+    printf '/backend/data\n' >> "$temp_app/.git/info/exclude"
+  else
+    rm -rf -- "$temp_app"
+    die "Git is required to create the installed source worktree"
+  fi
+
+  ln -s -- "$PERSISTENT_DB" "$temp_app/backend/data"
+  if ! mv -- "$temp_app" "$USER_APP"; then
+    rm -rf -- "$temp_app"
+    die "could not activate the per-user application tree"
+  fi
+fi
+
+[[ -d "$USER_APP/backend/app" ]] || die "per-user application tree is incomplete"
+if [[ ! -L "$USER_APP/backend/data" ]]; then
+  die "backend data path is not the protected XDG storage link"
+fi
+
+if [[ ! -f "$CONFIG_FILE" ]]; then
+  install -m 600 -- "$INSTALL_ROOT/share/lemma/env.default" "$CONFIG_FILE"
+fi
+chmod 600 -- "$CONFIG_FILE"
+
+# Use the exact Python minor version the native dependency bundle was built for.
+if [[ -n "${LEMMA_PYTHON:-}" ]]; then
+  PYTHON_BIN="$(command -v -- "$LEMMA_PYTHON" 2>/dev/null || true)"
+else
+  PYTHON_BIN="$(command -v "python$PYTHON_ABI" 2>/dev/null || command -v python3 2>/dev/null || true)"
+fi
+[[ -n "$PYTHON_BIN" ]] || die "Python $PYTHON_ABI is required"
+actual_abi="$($PYTHON_BIN -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
+[[ "$actual_abi" == "$PYTHON_ABI" ]] || \
+  die "this build requires Python $PYTHON_ABI, but $PYTHON_BIN is $actual_abi"
+
+BASE_PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+if [[ -d "$HOME/.local/bin" ]]; then
+  BASE_PATH="$HOME/.local/bin:$BASE_PATH"
+fi
+SAFE_LANG="${LANG:-C.UTF-8}"
+SAFE_SHELL="${SHELL:-/bin/sh}"
+BACKEND_OPTIONAL_ENV=()
+# Source Control forwards an SSH agent only after the Python boundary verifies it is
+# still a socket. Preserve that one capability when the launcher actually received it;
+# provider keys and every other ambient credential remain absent from the clean env.
+if [[ "${SSH_AUTH_SOCK:-}" == /* && -S "${SSH_AUTH_SOCK:-}" ]]; then
+  BACKEND_OPTIONAL_ENV+=("SSH_AUTH_SOCK=$SSH_AUTH_SOCK")
+fi
+
+frontend_pid=""
+backend_pid=""
+stop_children() {
+  trap - INT TERM
+  if [[ -n "$frontend_pid" ]]; then
+    kill -TERM "$frontend_pid" 2>/dev/null || true
+  fi
+  if [[ -n "$backend_pid" ]]; then
+    kill -TERM "$backend_pid" 2>/dev/null || true
+  fi
+  if [[ -n "$frontend_pid" ]]; then
+    wait "$frontend_pid" 2>/dev/null || true
+  fi
+  if [[ -n "$backend_pid" ]]; then
+    wait "$backend_pid" 2>/dev/null || true
+  fi
+}
+trap stop_children INT TERM
+
+# `-I` excludes user site-packages and ambient Python configuration; `-B` keeps the
+# manifest-covered payload immutable even when a portable install is user-writable.
+env -i HOME="$HOME" USER="${USER:-$(id -un)}" LOGNAME="${LOGNAME:-$(id -un)}" \
+  PATH="$BASE_PATH" LANG="$SAFE_LANG" SHELL="$SAFE_SHELL" \
+  XDG_DATA_HOME="$DATA_HOME" XDG_CONFIG_HOME="$CONFIG_HOME" \
+  XDG_STATE_HOME="$STATE_HOME" XDG_RUNTIME_DIR="$RUNTIME_HOME" \
+  "$PYTHON_BIN" -I -B "$INSTALL_ROOT/libexec/frontend_server.py" \
+  --root "$INSTALL_ROOT/share/lemma/web" --port 5173 &
+frontend_pid=$!
+
+env -i HOME="$HOME" USER="${USER:-$(id -un)}" LOGNAME="${LOGNAME:-$(id -un)}" \
+  PATH="$BASE_PATH" LANG="$SAFE_LANG" SHELL="$SAFE_SHELL" \
+  XDG_DATA_HOME="$DATA_HOME" XDG_CONFIG_HOME="$CONFIG_HOME" \
+  XDG_STATE_HOME="$STATE_HOME" XDG_RUNTIME_DIR="$RUNTIME_HOME" \
+  "${BACKEND_OPTIONAL_ENV[@]}" \
+  "$PYTHON_BIN" -I -B "$INSTALL_ROOT/libexec/backend_runner.py" \
+  --backend "$USER_APP/backend" --vendor "$INSTALL_ROOT/share/lemma/python" \
+  --env-file "$CONFIG_FILE" &
+backend_pid=$!
+
+printf 'Lemma %s is running at http://127.0.0.1:5173\n' "$VERSION"
+set +e
+# Bash 4.3 introduced `wait -n`; restricting it to explicit PIDs arrived only in
+# Bash 5.1. These are the supervisor's only children, so the portable form is exact.
+wait -n
+status=$?
+set -e
+stop_children
+if [[ "$status" -eq 0 ]]; then
+  die "one of the application servers stopped unexpectedly"
+fi
+exit "$status"

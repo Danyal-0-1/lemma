@@ -9,10 +9,11 @@
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 from sqlmodel import SQLModel, create_engine
 
 from app import db
-from app.models import Artifact
+from app.models import Artifact, IdeationSession
 from app.workspaces import manager
 
 _SPEC_JSON = """{
@@ -41,11 +42,26 @@ def _setup(tmp_path: Path, monkeypatch) -> int:
     SQLModel.metadata.create_all(engine)
     monkeypatch.setattr(db, "engine", engine)
     workspaces_dir = tmp_path / "workspaces"
+    vault_dir = tmp_path / "state-vault"
+    vault_dir.mkdir()
     monkeypatch.setattr(
-        manager, "get_settings", lambda: SimpleNamespace(workspaces_dir=str(workspaces_dir))
+        manager,
+        "get_settings",
+        lambda: SimpleNamespace(
+            workspaces_dir=str(workspaces_dir),
+            git_vault_dir=str(vault_dir),
+        ),
     )
 
     with db.get_session() as session:
+        session.add(
+            IdeationSession(
+                id="s1",
+                title="HabitDeck",
+                seed_prompt="a habit tracker",
+                status="approved",
+            )
+        )
         artifact = Artifact(session_id="s1", kind="spec", version=1, content_json=_SPEC_JSON)
         session.add(artifact)
         session.commit()
@@ -54,11 +70,21 @@ def _setup(tmp_path: Path, monkeypatch) -> int:
         return artifact.id
 
 
+def _create_or_skip(artifact_id: int):
+    """Create a workspace, skipping only Apple's machine-level license gate."""
+    try:
+        return manager.create_from_spec(artifact_id)
+    except RuntimeError as error:
+        if "Xcode Command Line Tools license" in str(error):
+            pytest.skip(str(error))
+        raise
+
+
 def test_create_from_spec_writes_files_and_git(tmp_path, monkeypatch) -> None:
     """A workspace has the four scaffold files, a git repo, and a persisted row."""
     artifact_id = _setup(tmp_path, monkeypatch)
 
-    workspace = manager.create_from_spec(artifact_id)
+    workspace = _create_or_skip(artifact_id)
 
     directory = Path(workspace.path)
     assert directory.is_dir()
@@ -75,8 +101,20 @@ def test_slug_collision_gets_suffix(tmp_path, monkeypatch) -> None:
     """Building the same Spec twice yields habit-deck and habit-deck-2."""
     artifact_id = _setup(tmp_path, monkeypatch)
 
-    first = manager.create_from_spec(artifact_id)
-    second = manager.create_from_spec(artifact_id)
+    first = _create_or_skip(artifact_id)
+    second = _create_or_skip(artifact_id)
 
     assert Path(first.path).name == "habit-deck"
     assert Path(second.path).name == "habit-deck-2"
+
+
+def test_state_vault_is_a_validated_builtin_workspace(tmp_path, monkeypatch) -> None:
+    """Automatic app-state history is visible without allowing arbitrary paths."""
+    _setup(tmp_path, monkeypatch)
+
+    workspaces = manager.list_workspaces()
+    vault = next(item for item in workspaces if item.id == manager.STATE_VAULT_WORKSPACE_ID)
+
+    assert vault.slug == "lemma-state-vault"
+    assert manager.get_workspace(vault.id) is not None
+    assert manager.validated_workspace_path(vault) == str((tmp_path / "state-vault").resolve())

@@ -9,9 +9,9 @@
 #
 # ╔══════════════════════════════════════════════════════════════════════════════╗
 # ║  ⚠️  BILLING SAFETY: the env we spawn the shell with comes from               ║
-# ║  app/shell_env.py::sanitized_env(), which STRIPS ANTHROPIC_API_KEY /          ║
-# ║  OPENAI_API_KEY. That's what makes a `claude` session here use your           ║
-# ║  SUBSCRIPTION, not per-token API billing. Read that file.                     ║
+# ║  app/shell_env.py::sanitized_env(), which builds a minimal allowlist.          ║
+# ║  Provider keys and other credentials are never inherited by the shell.         ║
+# ║  That's what prevents accidental metered API use. Read that file.              ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝
 #
 # WHY pty.fork (not a plain subprocess): a PTY makes the shell believe it's talking to
@@ -28,9 +28,11 @@ import json
 import logging
 import os
 import pty
+import secrets
 import signal
 import struct
 import termios
+import threading
 import time
 
 from fastapi import WebSocket
@@ -42,6 +44,11 @@ logger = logging.getLogger("aicompany.pty")
 
 # Registry of live terminals so a /pty socket can find its shell by id.
 _terminals: dict[str, PtyTerminal] = {}
+_terminals_lock = threading.Lock()
+CLAIM_TTL_SECONDS = 30
+MAX_OUTPUT_CHUNKS = 256
+MAX_INPUT_FRAME_BYTES = 64 * 1024
+MAX_CONTROL_FRAME_CHARS = 4_096
 
 
 def _set_winsize(fd: int, rows: int, cols: int) -> None:
@@ -59,6 +66,8 @@ class PtyTerminal:
         self.pid = pid
         self.master_fd = master_fd
         self.path = path
+        self.claim_deadline = time.monotonic() + CLAIM_TTL_SECONDS
+        self.expiry_timer: threading.Timer | None = None
 
     def write(self, data: bytes) -> None:
         """Send bytes (the user's keystrokes) into the shell."""
@@ -66,7 +75,7 @@ class PtyTerminal:
 
     def resize(self, rows: int, cols: int) -> None:
         """Resize the PTY window."""
-        _set_winsize(self.master_fd, rows, cols)
+        _set_winsize(self.master_fd, max(2, min(rows, 500)), max(2, min(cols, 500)))
 
     def close(self) -> None:
         """Close the PTY and REAP the child, so no zombie/hung process is left behind.
@@ -75,6 +84,18 @@ class PtyTerminal:
         we then waitpid to reap it, escalating to SIGKILL if it lingers. The strict
         try/except around each fd/pid call keeps a half-dead terminal from raising.
         """
+        if self.expiry_timer is not None:
+            self.expiry_timer.cancel()
+        with _terminals_lock:
+            if _terminals.get(self.id) is self:
+                _terminals.pop(self.id, None)
+
+        # Terminate the PTY's process group, not just the shell process. A child that
+        # ignored SIGHUP must not survive after the browser disconnects.
+        try:
+            os.killpg(self.pid, signal.SIGHUP)
+        except ProcessLookupError:
+            pass
         try:
             os.close(self.master_fd)
         except OSError:
@@ -93,7 +114,7 @@ class PtyTerminal:
 
         # Still alive → force it, then reap so it can't become a zombie.
         try:
-            os.kill(self.pid, signal.SIGKILL)
+            os.killpg(self.pid, signal.SIGKILL)
             os.waitpid(self.pid, 0)
         except (ProcessLookupError, ChildProcessError):
             pass
@@ -105,9 +126,9 @@ def create_terminal(workspace_path: str) -> str:
     Exists so the /pty socket has a shell to connect to. The child execs the user's
     $SHELL with the SANITIZED env (see the billing warning above).
     """
-    terminal_id = f"pty_{os.urandom(4).hex()}"
+    terminal_id = f"pty_{secrets.token_urlsafe(32)}"
     shell = os.environ.get("SHELL", "/bin/bash")
-    env = sanitized_env(workspace_path)  # ⚠️ strips API keys — see app/shell_env.py
+    env = sanitized_env(workspace_path)  # ⚠️ allowlists child env — see app/shell_env.py
 
     # pty.fork() forks; in the CHILD it wires stdio to the PTY and returns pid 0.
     pid, master_fd = pty.fork()
@@ -115,7 +136,14 @@ def create_terminal(workspace_path: str) -> str:
         # ---- child process ----
         try:
             os.chdir(workspace_path)
-            os.execvpe(shell, [shell], env)  # replaces the child with the shell
+            shell_name = os.path.basename(shell)
+            if shell_name == "zsh":
+                argv = [shell, "-f"]  # do not source a profile that may re-export secrets
+            elif shell_name == "bash":
+                argv = [shell, "--noprofile", "--norc"]
+            else:
+                argv = [shell]
+            os.execvpe(shell, argv, env)  # replaces the child with the shell
         except Exception:  # noqa: BLE001 — child must never fall through to app code
             os._exit(127)
 
@@ -125,19 +153,35 @@ def create_terminal(workspace_path: str) -> str:
     fcntl.fcntl(master_fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
 
     terminal = PtyTerminal(terminal_id, pid, master_fd, workspace_path)
-    _terminals[terminal_id] = terminal
+    def expire_unclaimed() -> None:
+        with _terminals_lock:
+            stale = _terminals.pop(terminal_id, None)
+        if stale is terminal:
+            logger.warning("reaping unclaimed terminal %s", terminal_id)
+            stale.close()
+
+    terminal.expiry_timer = threading.Timer(CLAIM_TTL_SECONDS, expire_unclaimed)
+    terminal.expiry_timer.daemon = True
+    with _terminals_lock:
+        _terminals[terminal_id] = terminal
+    terminal.expiry_timer.start()
     logger.info("spawned terminal %s (%s) in %s", terminal_id, shell, workspace_path)
     return terminal_id
 
 
 def _handle_control(terminal: PtyTerminal, text: str) -> None:
     """Handle a JSON control message from the client (currently just resize)."""
+    if len(text) > MAX_CONTROL_FRAME_CHARS:
+        return
     try:
         message = json.loads(text)
     except json.JSONDecodeError:
         return
     if message.get("type") == "resize":
-        terminal.resize(int(message.get("rows", 24)), int(message.get("cols", 80)))
+        try:
+            terminal.resize(int(message.get("rows", 24)), int(message.get("cols", 80)))
+        except (TypeError, ValueError, OverflowError):
+            return
 
 
 async def connect_pty(websocket: WebSocket, terminal_id: str) -> None:
@@ -147,14 +191,23 @@ async def connect_pty(websocket: WebSocket, terminal_id: str) -> None:
     loop's reader and queued so frames stay ordered; input arrives as binary frames
     (keystrokes) or text frames (resize control). On disconnect we always reap the shell.
     """
-    terminal = _terminals.get(terminal_id)
+    # The capability is one-use: remove it atomically before accepting the socket.
+    with _terminals_lock:
+        terminal = _terminals.pop(terminal_id, None)
     if terminal is None:
+        await websocket.close(code=1008)
+        return
+    if terminal.expiry_timer is not None:
+        terminal.expiry_timer.cancel()
+    if time.monotonic() > terminal.claim_deadline:
+        await asyncio.to_thread(terminal.close)
         await websocket.close(code=1008)
         return
 
     await websocket.accept()
     loop = asyncio.get_running_loop()
-    output: asyncio.Queue[bytes | None] = asyncio.Queue()
+    output: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=MAX_OUTPUT_CHUNKS)
+    overflowed = False
 
     def on_readable() -> None:
         # Called by the event loop when the shell has output (or has exited).
@@ -164,7 +217,15 @@ async def connect_pty(websocket: WebSocket, terminal_id: str) -> None:
             return  # spurious wakeup; nothing to read yet
         except OSError:
             data = b""  # fd closed / shell gone → treat as EOF
-        output.put_nowait(data if data else None)
+        nonlocal overflowed
+        try:
+            output.put_nowait(data if data else None)
+        except asyncio.QueueFull:
+            if not overflowed:
+                overflowed = True
+                loop.remove_reader(terminal.master_fd)
+                asyncio.create_task(asyncio.to_thread(terminal.close))
+                asyncio.create_task(websocket.close(code=1013, reason="terminal output overflow"))
 
     loop.add_reader(terminal.master_fd, on_readable)
 
@@ -185,15 +246,23 @@ async def connect_pty(websocket: WebSocket, terminal_id: str) -> None:
             if message["type"] == "websocket.disconnect":
                 break
             if (data := message.get("bytes")) is not None:
+                if len(data) > MAX_INPUT_FRAME_BYTES:
+                    await websocket.close(code=1009, reason="terminal input frame too large")
+                    break
                 terminal.write(data)  # keystrokes
             elif (text := message.get("text")) is not None:
                 _handle_control(terminal, text)  # resize
     except WebSocketDisconnect:
         pass
     finally:
-        loop.remove_reader(terminal.master_fd)
-        output.put_nowait(None)  # unblock the sender
+        try:
+            loop.remove_reader(terminal.master_fd)
+        except (OSError, ValueError):
+            pass
+        try:
+            output.put_nowait(None)  # unblock the sender
+        except asyncio.QueueFull:
+            pass
         sender.cancel()
-        _terminals.pop(terminal_id, None)
         # Reap off the event loop (it does short blocking waits).
         await asyncio.to_thread(terminal.close)

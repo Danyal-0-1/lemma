@@ -18,11 +18,12 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Literal
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Response, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.build.coordinator import build_from_spec
 from app.db import init_db
@@ -31,13 +32,18 @@ from app.events import event_bus
 from app.ideation import repo
 from app.ideation.control import cancel_session, resolve_approval, start_session
 from app.ideation.export import render_session_markdown
+from app.lab import repo as lab_repo
+from app.lab.routes import router as lab_router
 from app.oneshot import run_oneshot
+from app.security import LocalOnlyMiddleware, websocket_is_trusted
 from app.settings import get_settings
+from app.state_vault import sync_loop as sync_state_vault_loop
+from app.state_vault import sync_vault
 from app.teach.explain import run_explain
 from app.terminal.pty_service import connect_pty, create_terminal
-from app.workspaces import checks, manager
+from app.workspaces import checks, github, manager, source_control
 from app.workspaces.diff import compute_diff
-from app.workspaces.files import list_files, read_file
+from app.workspaces.files import build_tree, list_files, read_file
 from app.ws import connect_websocket
 
 # The three decisions the founder can make at the approval gate.
@@ -45,14 +51,18 @@ VALID_DECISIONS = {"approve", "changes", "reject"}
 
 # A single version string surfaced in /health and (later) the `hello` WS event, so the
 # frontend can tell which backend it's talking to.
-SERVER_VERSION = "0.1.0"
+SERVER_VERSION = "0.2.0"
 
-# The browser calls our API from the frontend's origin (same host, different port = a
-# "cross origin" request), so CORS must allow it. We allow ANY port on this machine's
-# loopback address rather than just :5173, because Vite quietly moves to :5174, :5175…
-# when 5173 is busy — and a hard-coded port would then silently reject every request.
-# Still local-only: a page on another machine or domain never matches this pattern.
-FRONTEND_ORIGIN_REGEX = r"^http://(localhost|127\.0\.0\.1):\d+$"
+# The frontend and backend use different ports in development. Unlike the original
+# any-loopback-port regex, this exact list does not trust an unrelated local web app.
+ALLOWED_FRONTEND_ORIGINS = get_settings().allowed_frontend_origins()
+
+# Practical request bounds. These are deliberately generous for research prompts while
+# preventing a single local request from consuming unbounded memory or provider spend.
+MAX_SEED_CHARS = 20_000
+MAX_FEEDBACK_CHARS = 20_000
+MAX_EXPLAIN_CONTENT_CHARS = 200_000
+MAX_CONTEXT_LABEL_CHARS = 256
 
 logger = logging.getLogger("aicompany")
 
@@ -87,6 +97,23 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     # Create the SQLite database + tables if needed (used by the cost meter, M2+).
     init_db()
+    recovered = await asyncio.to_thread(lab_repo.recover_stale_runs)
+    if recovered:
+        logger.warning("recovered %d interrupted research run(s) as failed", recovered)
+
+    # Keep a human-reviewable local Git history of the durable application state.
+    # The vault has no remote by default and this process never pushes it.
+    vault_stop: asyncio.Event | None = None
+    vault_task: asyncio.Task[None] | None = None
+    if settings.auto_git_vault:
+        try:
+            await asyncio.to_thread(sync_vault)
+        except Exception:
+            # A missing/broken Git installation must not turn the desktop into a
+            # blank screen. Source Control will surface the actionable Git error.
+            logger.exception("initial application-state snapshot failed")
+        vault_stop = asyncio.Event()
+        vault_task = asyncio.create_task(sync_state_vault_loop(vault_stop))
 
     # Soft guard: warn (don't crash) if we'd try to call real models with no key.
     if not settings.mock_llm and not settings.has_any_key():
@@ -99,9 +126,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     logger.info("Lemma backend v%s starting — %s", SERVER_VERSION, mode)
     logger.info("Serving on http://%s:%d", settings.host, settings.port)
 
-    yield  # ── the app serves requests while suspended here ──
-
-    logger.info("Lemma backend shutting down.")
+    try:
+        yield  # ── the app serves requests while suspended here ──
+    finally:
+        if vault_stop is not None and vault_task is not None:
+            vault_stop.set()
+            await vault_task
+            try:
+                await asyncio.to_thread(sync_vault)
+            except Exception:
+                logger.exception("final application-state snapshot failed")
+        logger.info("Lemma backend shutting down.")
 
 
 # The application object uvicorn imports and runs. The lifespan handler above wires in
@@ -112,11 +147,24 @@ app = FastAPI(title="Lemma", version=SERVER_VERSION, lifespan=lifespan)
 # We allow only local origins — never "*" — because this server runs shell commands.
 app.add_middleware(
     CORSMiddleware,
-    allow_origin_regex=FRONTEND_ORIGIN_REGEX,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=ALLOWED_FRONTEND_ORIGINS,
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "PUT", "PATCH", "OPTIONS"],
+    allow_headers=["Content-Type"],
 )
+# This also checks the actual peer address, closing the gap between the HOST setting
+# and a Uvicorn command-line --host override.
+app.add_middleware(LocalOnlyMiddleware, allowed_origins=ALLOWED_FRONTEND_ORIGINS)
+app.include_router(lab_router)
+
+
+def _require_host_execution() -> None:
+    """Reject host process execution unless the local operator explicitly enabled it."""
+    if not get_settings().enable_host_execution:
+        raise HTTPException(
+            status_code=403,
+            detail="host execution is disabled; set ENABLE_HOST_EXECUTION=true to opt in",
+        )
 
 
 @app.get("/health")
@@ -131,6 +179,7 @@ def health() -> dict[str, object]:
         "status": "ok",
         "version": SERVER_VERSION,
         "mock_llm": settings.mock_llm,
+        "enable_host_execution": settings.enable_host_execution,
     }
 
 
@@ -142,6 +191,9 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     clean disconnect) lives in ws.py so this route stays a one-liner — the pattern
     every reader can predict.
     """
+    if not websocket_is_trusted(websocket, ALLOWED_FRONTEND_ORIGINS):
+        await websocket.close(code=1008, reason="untrusted websocket origin")
+        return
     await connect_websocket(websocket, event_bus, SERVER_VERSION)
 
 
@@ -153,7 +205,7 @@ async def demo() -> dict[str, str]:
     demo as a background task and return immediately — the conversation then streams
     in over /ws, exactly as a real ideation session will.
     """
-    session_id = f"ideation_{uuid4().hex[:8]}"
+    session_id = f"ideation_{uuid4().hex}"
     # Fire-and-forget: the task publishes events on its own; the HTTP call is just the trigger.
     asyncio.create_task(run_demo(session_id))
     return {"session_id": session_id}
@@ -162,9 +214,15 @@ async def demo() -> dict[str, str]:
 class OneshotRequest(BaseModel):
     """Body for POST /api/oneshot: the seed idea to hand the Generator."""
 
+    model_config = ConfigDict(extra="forbid")
+
     # A sensible default so the button works with no typing; the composer supplies
     # a real seed in M3.
-    seed: str = "a small tool that helps me build better habits"
+    seed: str = Field(
+        default="a small tool that helps me build better habits",
+        min_length=1,
+        max_length=MAX_SEED_CHARS,
+    )
 
 
 @app.post("/api/oneshot")
@@ -175,7 +233,7 @@ async def oneshot(request: OneshotRequest) -> dict[str, str]:
     through the provider layer, prices the result, and moves the cost meter. Like the
     demo, it runs in the background and streams over /ws.
     """
-    session_id = f"ideation_{uuid4().hex[:8]}"
+    session_id = f"ideation_{uuid4().hex}"
     asyncio.create_task(run_oneshot(session_id, request.seed))
     return {"session_id": session_id}
 
@@ -186,20 +244,24 @@ async def oneshot(request: OneshotRequest) -> dict[str, str]:
 class SessionRequest(BaseModel):
     """Body for POST /api/sessions: the founder's seed idea to start the crew."""
 
-    seed: str
+    model_config = ConfigDict(extra="forbid")
+
+    seed: str = Field(min_length=1, max_length=MAX_SEED_CHARS)
 
 
 class ApprovalRequest(BaseModel):
     """Body for POST /api/sessions/{id}/approve: the founder's decision at the gate."""
 
-    decision: str  # "approve" | "changes" | "reject"
-    feedback: str | None = None
+    model_config = ConfigDict(extra="forbid")
+
+    decision: Literal["approve", "changes", "reject"]
+    feedback: str | None = Field(default=None, max_length=MAX_FEEDBACK_CHARS)
 
 
 @app.post("/api/sessions")
 async def create_session(request: SessionRequest) -> dict[str, str]:
     """Start a full ideation crew run for a seed. The debate streams over /ws."""
-    session_id = f"ideation_{uuid4().hex[:8]}"
+    session_id = f"ideation_{uuid4().hex}"
     start_session(session_id, request.seed)
     return {"session_id": session_id}
 
@@ -271,7 +333,7 @@ async def create_workspace_from_spec(artifact_id: int) -> dict[str, str]:
     """Build a workspace directory from a Spec artifact and enter the build phase."""
     try:
         workspace = await build_from_spec(artifact_id)
-    except ValueError as error:
+    except (ValueError, RuntimeError) as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
     return {"workspace_id": workspace.id, "path": workspace.path, "slug": workspace.slug}
 
@@ -295,20 +357,30 @@ async def get_workspace(workspace_id: str) -> dict[str, object]:
 @app.post("/api/workspaces/{workspace_id}/open-in-editor")
 async def open_workspace_in_editor(workspace_id: str) -> dict[str, str]:
     """Open the workspace folder in the user's editor (or reveal it)."""
+    _require_host_execution()
     workspace = await asyncio.to_thread(manager.get_workspace, workspace_id)
     if workspace is None:
         raise HTTPException(status_code=404, detail="workspace not found")
-    result = await asyncio.to_thread(manager.open_in_editor, workspace.path)
+    try:
+        path = await asyncio.to_thread(manager.validated_workspace_path, workspace)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    result = await asyncio.to_thread(manager.open_in_editor, path)
     return {"result": result}
 
 
 @app.post("/api/workspaces/{workspace_id}/reveal")
 async def reveal_workspace(workspace_id: str) -> dict[str, str]:
     """Reveal the workspace folder in the OS file manager."""
+    _require_host_execution()
     workspace = await asyncio.to_thread(manager.get_workspace, workspace_id)
     if workspace is None:
         raise HTTPException(status_code=404, detail="workspace not found")
-    result = await asyncio.to_thread(manager.reveal, workspace.path)
+    try:
+        path = await asyncio.to_thread(manager.validated_workspace_path, workspace)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    result = await asyncio.to_thread(manager.reveal, path)
     return {"result": result}
 
 
@@ -335,10 +407,15 @@ async def restore_workspace(workspace_id: str) -> dict[str, str]:
 @app.post("/api/terminals")
 async def create_terminal_route(request: TerminalRequest) -> dict[str, str]:
     """Spawn a shell in a workspace and return the terminal id to connect /pty to."""
+    _require_host_execution()
     workspace = await asyncio.to_thread(manager.get_workspace, request.workspace_id)
     if workspace is None:
         raise HTTPException(status_code=404, detail="workspace not found")
-    terminal_id = create_terminal(workspace.path)
+    try:
+        path = await asyncio.to_thread(manager.validated_workspace_path, workspace)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    terminal_id = create_terminal(path)
     return {"terminal_id": terminal_id}
 
 
@@ -349,6 +426,12 @@ async def pty_endpoint(websocket: WebSocket, terminal_id: str) -> None:
     Kept separate from /ws (which carries the JSON event envelope) so terminal bytes
     stay off the event bus — see ARCHITECTURE.md.
     """
+    if not get_settings().enable_host_execution:
+        await websocket.close(code=1008, reason="host execution disabled")
+        return
+    if not websocket_is_trusted(websocket, ALLOWED_FRONTEND_ORIGINS):
+        await websocket.close(code=1008, reason="untrusted websocket origin")
+        return
     await connect_pty(websocket, terminal_id)
 
 
@@ -360,7 +443,10 @@ async def _require_workspace_path(workspace_id: str) -> str:
     workspace = await asyncio.to_thread(manager.get_workspace, workspace_id)
     if workspace is None:
         raise HTTPException(status_code=404, detail="workspace not found")
-    return workspace.path
+    try:
+        return await asyncio.to_thread(manager.validated_workspace_path, workspace)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
 
 
 @app.get("/api/workspaces/{workspace_id}/diff")
@@ -377,6 +463,13 @@ async def get_files(workspace_id: str) -> dict:
     return await asyncio.to_thread(list_files, path)
 
 
+@app.get("/api/workspaces/{workspace_id}/tree")
+async def get_workspace_tree(workspace_id: str) -> dict:
+    """Return a bounded hierarchy for the VS Code-style Explorer."""
+    path = await _require_workspace_path(workspace_id)
+    return await asyncio.to_thread(build_tree, path)
+
+
 @app.get("/api/workspaces/{workspace_id}/file")
 async def get_file(workspace_id: str, path: str, ref: str = "working") -> dict:
     """Return one file's content — working tree, or the committed version (ref=head)."""
@@ -385,6 +478,156 @@ async def get_file(workspace_id: str, path: str, ref: str = "working") -> dict:
         return await asyncio.to_thread(read_file, workspace_path, path, ref)
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+class GitPathsRequest(BaseModel):
+    """A bounded set of literal workspace paths to stage or unstage."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    paths: list[str] = Field(min_length=1, max_length=source_control.MAX_MUTATION_PATHS)
+
+
+class GitCommitRequest(BaseModel):
+    """A human-authored commit message; Git hooks and signing remain disabled."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    message: str = Field(min_length=1, max_length=source_control.MAX_COMMIT_MESSAGE_CHARS)
+
+
+class GitPushRequest(BaseModel):
+    """An explicitly confirmed push of current HEAD to its configured upstream."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    remote: str = Field(min_length=1, max_length=64)
+    branch: str = Field(min_length=1, max_length=255)
+    confirm: bool = False
+
+
+class GitRemoteRequest(BaseModel):
+    """A credential-free github.com remote and optional initial branch tracking."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    url: str = Field(min_length=1, max_length=2_048)
+    set_upstream: bool = False
+
+
+def _source_control_http_error(error: source_control.SourceControlError) -> HTTPException:
+    return HTTPException(status_code=400, detail=str(error))
+
+
+@app.get("/api/github/status")
+async def get_github_status() -> dict[str, object]:
+    """Inspect the local GitHub CLI account without requesting or returning a token."""
+    return await asyncio.to_thread(github.github_connection_status)
+
+
+@app.get("/api/workspaces/{workspace_id}/git/status")
+async def get_git_status(workspace_id: str) -> dict[str, object]:
+    """Read branch and working-tree state without enabling host mutations."""
+    path = await _require_workspace_path(workspace_id)
+    try:
+        return await asyncio.to_thread(source_control.git_status, path)
+    except source_control.SourceControlError as error:
+        raise _source_control_http_error(error) from error
+
+
+@app.get("/api/workspaces/{workspace_id}/git/remotes")
+async def get_git_remotes(workspace_id: str) -> dict[str, object]:
+    """Return credential-redacted Git remote and GitHub connection information."""
+    path = await _require_workspace_path(workspace_id)
+    try:
+        return await asyncio.to_thread(source_control.git_remote_info, path)
+    except source_control.SourceControlError as error:
+        raise _source_control_http_error(error) from error
+
+
+@app.put("/api/workspaces/{workspace_id}/git/remotes/{remote}")
+async def put_git_remote(
+    workspace_id: str,
+    remote: str,
+    body: GitRemoteRequest,
+) -> dict[str, object]:
+    """Add/update a GitHub remote only after the operator enables host writes."""
+    _require_host_execution()
+    path = await _require_workspace_path(workspace_id)
+    try:
+        return await asyncio.to_thread(
+            source_control.configure_github_remote,
+            path,
+            remote,
+            body.url,
+            set_upstream=body.set_upstream,
+        )
+    except source_control.SourceControlError as error:
+        raise _source_control_http_error(error) from error
+
+
+@app.get("/api/workspaces/{workspace_id}/git/diff")
+async def get_git_file_diff(
+    workspace_id: str,
+    path: str,
+    staged: bool = False,
+) -> dict[str, object]:
+    """Return a bounded textual patch with external diff drivers disabled."""
+    workspace_path = await _require_workspace_path(workspace_id)
+    try:
+        return await asyncio.to_thread(source_control.git_diff, workspace_path, path, staged)
+    except source_control.SourceControlError as error:
+        raise _source_control_http_error(error) from error
+
+
+@app.post("/api/workspaces/{workspace_id}/git/stage")
+async def stage_git_paths(workspace_id: str, body: GitPathsRequest) -> dict[str, object]:
+    _require_host_execution()
+    path = await _require_workspace_path(workspace_id)
+    try:
+        status = await asyncio.to_thread(source_control.stage_paths, path, body.paths)
+    except source_control.SourceControlError as error:
+        raise _source_control_http_error(error) from error
+    return {"ok": True, "status": status}
+
+
+@app.post("/api/workspaces/{workspace_id}/git/unstage")
+async def unstage_git_paths(workspace_id: str, body: GitPathsRequest) -> dict[str, object]:
+    _require_host_execution()
+    path = await _require_workspace_path(workspace_id)
+    try:
+        status = await asyncio.to_thread(source_control.unstage_paths, path, body.paths)
+    except source_control.SourceControlError as error:
+        raise _source_control_http_error(error) from error
+    return {"ok": True, "status": status}
+
+
+@app.post("/api/workspaces/{workspace_id}/git/commit")
+async def commit_git_changes(workspace_id: str, body: GitCommitRequest) -> dict[str, object]:
+    _require_host_execution()
+    path = await _require_workspace_path(workspace_id)
+    try:
+        return await asyncio.to_thread(source_control.commit_changes, path, body.message)
+    except source_control.SourceControlError as error:
+        raise _source_control_http_error(error) from error
+
+
+@app.post("/api/workspaces/{workspace_id}/git/push")
+async def push_git_branch(workspace_id: str, body: GitPushRequest) -> dict[str, object]:
+    _require_host_execution()
+    if body.confirm is not True:
+        raise HTTPException(status_code=400, detail="push requires explicit confirmation")
+    path = await _require_workspace_path(workspace_id)
+    try:
+        return await asyncio.to_thread(
+            source_control.push_branch,
+            path,
+            body.remote,
+            body.branch,
+            confirmed=True,
+        )
+    except source_control.SourceControlError as error:
+        raise _source_control_http_error(error) from error
 
 
 class ChecksBody(BaseModel):
@@ -411,6 +654,7 @@ async def put_checks(workspace_id: str, body: ChecksBody) -> dict:
 @app.post("/api/workspaces/{workspace_id}/checks/{check_id}/run")
 async def run_check_route(workspace_id: str, check_id: str) -> dict:
     """Run a saved check; its output streams over /ws (check_started/output/finished)."""
+    _require_host_execution()
     path = await _require_workspace_path(workspace_id)
     asyncio.create_task(checks.run_check(workspace_id, path, check_id))
     return {"status": "running"}
@@ -422,16 +666,18 @@ async def run_check_route(workspace_id: str, check_id: str) -> dict:
 class ExplainRequest(BaseModel):
     """Body for POST /api/explain: what to explain and any surrounding context."""
 
-    content: str | None = None  # a selection / a file / a diff to explain
-    question: str | None = None  # a free-form question from the composer
-    context: str | None = None  # the active tab's content, for grounding
-    context_label: str | None = None  # e.g. "diff", "spec", a file path
+    model_config = ConfigDict(extra="forbid")
+
+    content: str | None = Field(default=None, max_length=MAX_EXPLAIN_CONTENT_CHARS)
+    question: str | None = Field(default=None, max_length=MAX_FEEDBACK_CHARS)
+    context: str | None = Field(default=None, max_length=MAX_EXPLAIN_CONTENT_CHARS)
+    context_label: str | None = Field(default=None, max_length=MAX_CONTEXT_LABEL_CHARS)
 
 
 @app.post("/api/explain")
 async def explain(request: ExplainRequest) -> dict[str, str]:
     """Ask the mentor to explain something; the answer streams over /ws as role mentor."""
-    session_id = f"explain_{uuid4().hex[:8]}"
+    session_id = f"explain_{uuid4().hex}"
     asyncio.create_task(
         run_explain(
             session_id,

@@ -21,11 +21,15 @@ backend/**/*.pyc
 .ruff_cache/
 .venv/
 backend/.venv/
+*.egg-info/
 
 # --- Frontend build + dependency artifacts (reproducible from package.json).
 frontend/node_modules/
 frontend/dist/
 frontend/.vite/
+
+# --- Linux release artifacts (rebuilt from the locked source tree).
+linux_install/dist/
 
 # --- The user's retyping scratch space (Section 1, rule 8). Personal, not shared.
 learning/retyped/*

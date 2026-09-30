@@ -12,8 +12,8 @@
 
 [project]
 name = "lemma-backend"
-version = "0.1.0"
-description = "Local-first AI ideation + build orchestration shell (backend)."
+version = "0.2.0"
+description = "Local-first multi-agent R&D studio and human-controlled build workbench."
 requires-python = ">=3.12"
 license = { text = "MIT" }
 

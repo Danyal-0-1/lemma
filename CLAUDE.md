@@ -33,8 +33,10 @@ we are. Keep it current — it is the contract every future session inherits.
 | M5 — Workspaces + Terminal | ✅ done | see `git log` |
 | M6 — Diff + Files + Checks | ✅ done | see `git log` |
 | M7 — Explain (mentor) | ✅ done | see `git log` |
-| M8 — Polish + learning pass | ⏳ next | — |
+| M8 — Polish + learning pass | ✅ done | see `git log` |
 | M9 — Headless AgentProvider | ▫ optional | — |
+| R&D Studio — configurable research organization | ✅ implemented | working tree |
+| Linux distribution — offline bundle, portable installer, Debian package | ✅ implemented | working tree |
 
 ---
 
@@ -129,11 +131,10 @@ outranks cleverness, brevity, and micro-performance. Concretely (PROMPT.md §1):
   restore shows the transcript + artifacts for viewing/export, not for continuing.
 - **Single `sessionId` in the store** (view + signal target), kept across the return to
   idle so a finished session can still be exported; `awaitingApproval` clears on idle.
-- **⚠️ Billing safety (the app's most important line):** `pty_service._sanitized_env()`
-  deletes `ANTHROPIC_API_KEY`/`OPENAI_API_KEY` before spawning the shell, so an
-  interactive `claude` in the terminal uses the subscription, not metered API billing.
-  Verified live: the shell shows an EMPTY key even when the backend process was started
-  WITH the key set. `test_pty.py` guards this — never weaken it.
+- **⚠️ Billing and credential safety:** `shell_env.sanitized_env()` constructs a small
+  allowlist instead of copying the backend environment. Provider keys, cloud tokens,
+  credential variables, and agent sockets therefore stay out of terminal/check child
+  processes. `test_pty.py` and `test_security.py` guard this — never weaken it.
 - **PTY design:** `pty.fork()` + `os.execvpe` (controlling terminal set correctly for
   job control); non-blocking master fd read via `loop.add_reader` → ordered queue →
   ws; keystrokes are BINARY frames, resize is a TEXT control frame. Reaping is
@@ -146,9 +147,8 @@ outranks cleverness, brevity, and micro-performance. Concretely (PROMPT.md §1):
 - **Workspaces live OUTSIDE the repo** at `~/ai-company-workspaces/<slug>` (collision →
   `-slug-2`), git-inited with SPEC.md/spec.json/CLAUDE.md/aicompany.json. Directory is
   never deleted in v1. xterm loads lazily (build phase only), like Monaco.
-- **The sanitized env is now shared** (`app/shell_env.py::sanitized_env`) by BOTH the PTY
-  terminal and the Checks runner — one source of the key-stripping guarantee so they
-  can't drift. Checks also run with it.
+- **The allowlisted child env is shared** (`app/shell_env.py::sanitized_env`) by BOTH
+  the PTY terminal and Checks runner, so their credential boundary cannot drift.
 - **Diff = working tree vs HEAD** (`git diff HEAD --numstat`) plus untracked from
   `git status --porcelain`. The Diff tab PULLS (Refresh + 5s poll only while visible),
   publishes totals to `store.diffCounts` for the sidebar `+/−`; no `diff_updated` event.
@@ -169,11 +169,42 @@ outranks cleverness, brevity, and micro-performance. Concretely (PROMPT.md §1):
   grounded (e.g. the diff summary / the open file).
 - **Added a `user` role** to the Conversation (our optimistic "You" bubble); turns are
   appended via the generalized `appendTurn(turns, role, text)` store helper.
+- **The state vault holds application history.** SQLite remains live state;
+  `state_vault.py` commits a deterministic JSON projection to a separate local Git
+  repository at `settings.git_vault_dir`. Credential-shaped fields and absolute
+  workspace paths are removed; Lemma configures no remote and never pushes it.
+  Research prompts and findings remain sensitive.
+- **Linux distribution uses one verified payload.** `linux_install/build.sh` builds the
+  production frontend and vendored Python tree entirely from pre-populated npm/uv
+  caches, then emits a manifest-checked directory and archive. The receipt-managed
+  portable installer consumes that bundle directly; `build-deb.sh` verifies and wraps
+  the same tree under `/opt/lemma` instead of rebuilding dependencies.
+- **Installed code and mutable state never share a lifecycle.** Replaceable payloads
+  live under `~/.local/opt/lemma` or `/opt/lemma`; private config, the database/state
+  vault, versioned writable source, and logs use XDG config/data/state directories.
+  Normal upgrades and removal preserve those trees and `~/ai-company-workspaces`.
+- **Linux artifacts have a narrow compatibility and trust envelope.** Vendored native
+  dependencies bind a bundle to its architecture, compatible system libraries, and
+  exact Python `major.minor` recorded in `PYTHON_ABI`. SHA-256 manifests protect
+  integrity but are not signatures. The packaged runtime remains loopback-only and
+  single-user; a `.deb` is not a production deployment boundary.
+- **Never reuse a Linux release version for changed code.** The builder requires the
+  frontend, backend package, and server versions to match; first launch seeds a writable
+  backend source tree at `app-<version>`. Reusing a version would deliberately retain
+  the earlier user tree, so bump all three version declarations for every code release.
 
 ---
 
 ## Reminders that have bitten people
 
-- **Billing:** the app strips `ANTHROPIC_API_KEY`/`OPENAI_API_KEY` from the terminal's
-  env before spawning a shell (M5) so an interactive `claude` uses the subscription,
-  not metered API billing. Never `export` those keys in the shell running this app.
+- **R&D extension:** departments, agent duty cards, projects/tasks/findings, bounded
+  meetings, and activity auditing live under `app/lab/` and `frontend/src/lab/`.
+  Agents are prompt-only by construction; natural language never grants capabilities.
+- **Host tools:** disabled unless `ENABLE_HOST_EXECUTION=true`. The PTY is a trusted-
+  human convenience, not a sandbox. Never expose this backend beyond loopback.
+- **Billing:** never export provider keys into a shell used to run coding CLIs. Lemma's
+  child environment allowlist adds defense in depth but does not change external CLI
+  billing contracts.
+- **Linux releases:** build on the oldest compatible Linux target with the intended
+  Python minor version, distribute through a trusted channel, and keep mutable XDG data
+  out of release bundles. See `linux_install/README.md` before changing packaging.

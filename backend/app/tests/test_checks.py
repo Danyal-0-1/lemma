@@ -47,7 +47,11 @@ async def test_run_check_pass(tmp_path) -> None:
 
 async def test_run_check_fail(tmp_path) -> None:
     """A failing check finishes with a non-zero exit_code (red badge)."""
-    checks.write_checks(str(tmp_path), [{"id": "bad", "name": "bad", "command": "exit 3"}])
+    # Shell syntax is never implicit; an explicit trusted shell argv is still possible.
+    checks.write_checks(
+        str(tmp_path),
+        [{"id": "bad", "name": "bad", "command": "/bin/sh -c 'exit 3'"}],
+    )
     queue = event_bus.subscribe()
     try:
         await checks.run_check("ws1", str(tmp_path), "bad")

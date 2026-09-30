@@ -3,15 +3,18 @@
 
 > *Lemma* (Greek *lēmma*): a small proven step on the way to a bigger theorem. Each milestone you read and retype is one.
 
-A **local-first, single-user** web app for turning a rough idea into a build-ready
-spec with a small crew of AI roles, then handing that spec to a real coding agent
-(Claude Code / Codex) that you drive in an embedded terminal — with live diffs,
-checks, and a built-in mentor that explains any code to you.
+A **local-first R&D operating system** for assembling small teams of AI research
+agents. Create departments or temporary mission teams, give each agent a name and a
+structured duty card, assign research work, and bring selected agents into bounded
+meeting rooms where they share findings and produce a synthesis.
 
-It looks like VS Code and works like [Conductor](https://conductor.build): three
-panels, a diff-first review loop, and chrome that only shows what the current moment
-needs. It is **not** an IDE — your real editor and the coding agent write the code;
-this app orchestrates and reviews.
+Lemma also keeps its original product-ideation and build workbench: a four-role crew
+can turn a rough idea into a build-ready spec, then hand it to a coding agent you drive
+in an embedded terminal with live diffs, checks, and a built-in mentor.
+
+The interface borrows the dense activity rail, explorer, editor, and inspector model
+from VS Code. It is **not** a replacement for your editor: it is the control plane for
+your research organization, its conversations, and its reviewed outputs.
 
 > **This is a learning codebase.** Every file is heavily commented and ranked with a
 > `READING ORDER`. See [`LEARNING_PATH.md`](LEARNING_PATH.md) for the reading/retyping
@@ -24,9 +27,10 @@ this app orchestrates and reviews.
 Built milestone by milestone (see [`PROMPT.md`](PROMPT.md) §14). Current progress lives
 in [`CLAUDE.md`](CLAUDE.md) under *Milestone status*, and in `git log --oneline`.
 
-**M0–M8 complete.** Phase 0 (ideation crew → approved Spec) and Phase 1 (workspace →
-terminal → diff/checks → mentor) both work end to end, and the whole app is demoable in
-mock mode with no keys and no cost.
+**R&D Studio and M0–M8 work end to end.** Departments, mission teams, agent duty
+cards, projects, tasks, addressed live runs, bounded meetings, findings, and an audit
+feed sit alongside the original ideation → Spec → workspace workflow. The whole app
+is demoable in mock mode with no keys and no cost.
 
 ---
 
@@ -67,7 +71,68 @@ Then open **http://localhost:5173**.
 
 ---
 
-## First-run walkthrough (mock mode, ~2 minutes)
+## Packaged Linux installation
+
+Linux releases can be built as an offline, per-architecture bundle and optionally
+wrapped in a Debian package:
+
+```bash
+make linux-bundle
+make linux-deb BUNDLE=linux_install/dist/lemma-<version>-linux-<arch>
+```
+
+The build requires pre-populated npm and uv caches. See the
+[`linux_install` guide](linux_install/README.md) for prerequisites, portable and
+Debian installation, upgrades, data locations, security notes, and limitations.
+
+---
+
+## R&D Studio walkthrough (mock mode, ~5 minutes)
+
+1. Open **Organization** from the activity rail and create a department or mission
+   team.
+2. Add two or three agents. Give each one a role, mission, duties, the issues it must
+   consider, ranked priorities, and a communication scope. These fields form its Duty
+   Card; they do not grant tools or machine permissions.
+3. Open **Research**, create a project, then create a task with one assigned agent,
+   research objective, context, and expected output. Run it and watch its own addressed
+   stream without mixing it into another agent's work.
+4. Open **Meetings**, choose a project, facilitator, and permitted participants, and
+   write an agenda. Running the room collects one bounded contribution per participant
+   and then asks the facilitator for a synthesis. The transcript remains durable.
+5. Use **HQ** to see the organization at a glance, recent activity, work in flight,
+   and completed outputs. Use **Security** to see which capabilities are deliberately
+   unavailable.
+6. Open **Workbench** whenever you want the original ideation crew, specs, files,
+   diffs, checks, terminal, and mentor.
+
+> Research outputs are model syntheses, not automatically verified evidence. The
+> secure default gives research agents no browser, shell, filesystem, connector, or
+> secret access. Add and verify sources before relying on important claims.
+
+## Code workbench
+
+The first four activity-rail tools provide a VS Code-style view of the selected
+workspace:
+
+- **Explorer** shows a bounded project tree and opens text files in a read-only Monaco
+  editor with tabs and breadcrumbs.
+- **Search** finds text across the workspace without following symlinks or exposing
+  credential files, generated dependencies, or the local application database.
+- **Source Control** shows the current branch, upstream, ahead/behind counts, staged
+  and working changes, and bounded patches. Stage, unstage, commit, and confirmed push
+  are available only after the operator enables host execution.
+- **Terminal** is a real local PTY for the selected workspace and remains visibly
+  locked until `ENABLE_HOST_EXECUTION=true` is set and the backend is restarted.
+
+Use the Account and Settings buttons at the bottom of the activity rail for local
+runtime status, System/Dark/Light/Gray themes, and editor preferences. System theme
+tracks operating-system appearance changes live; preferences remain in browser local
+storage. Git pushes accept only the checked-out branch's configured HTTPS or SSH
+upstream, never force, embedded credentials, hooks, global Git configuration, or
+interactive credential prompts.
+
+## Original workbench walkthrough (mock mode, ~2 minutes)
 
 1. **Start an ideation session.** In the center composer, type an idea (e.g. *"a tool to
    plan weekly meals"*) and press **Enter**. Four AI roles — Generator, Researcher,
@@ -77,13 +142,16 @@ Then open **http://localhost:5173**.
    right pane's **Spec** tab shows every version (and the idea's evolution).
 3. **Create a workspace.** In the Spec tab, click **Create workspace**. The app makes a
    real git repo under `~/ai-company-workspaces/<slug>` and switches to the build phase.
-4. **Use the terminal.** The **Terminal** tab is a real shell inside the workspace. Try
-   `echo $ANTHROPIC_API_KEY` — it's **empty** (the app strips it, so an interactive
-   `claude` here uses your subscription). Create a file: `echo hi > notes.txt`.
+4. **Use the terminal (optional).** Host execution is locked on a fresh install. If
+   you intentionally set `ENABLE_HOST_EXECUTION=true`, the **Terminal** tab is a real
+   human-operated shell inside the workspace. Child processes receive a minimal
+   environment rather than the backend's provider credentials.
 5. **Review the diff.** Open the **Diff** tab — your new file shows with `+/−` counts
    (also on the sidebar). Click it for a Monaco diff.
 6. **Run a check.** In the **Checks** tab, click **+ Add**, set the command to `echo ok`,
-   and **Run** → green ✓. Try `exit 1` → red ✗.
+   and **Run** → green ✓. Try `false` → red ✗. Commands are parsed as argument lists;
+   shell operators run only when you deliberately invoke a shell such as
+   `/bin/sh -c '…'`.
 7. **Ask the mentor.** Select some code in Diff/Files and click **Explain this**, or ask
    *"what does this diff do?"* in the composer. The mentor answers in the conversation.
 8. **Archive when done.** Hover a workspace in the sidebar and click **archive** — it
@@ -111,20 +179,27 @@ Claude Code or this app.** If that variable is set, the `claude` CLI bills your
 **API account per token** instead of using your **subscription**. This app:
 
 - keeps its keys in `backend/.env` (loaded into the backend process only), and
-- **strips** `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` from the environment before it
-  spawns the embedded terminal — so a `claude` session you start there uses your
-  subscription, not metered API billing.
+- constructs a minimal child-process environment instead of copying the backend's
+  environment. Provider keys, cloud tokens, credential variables, and agent sockets
+  stay out of the embedded terminal and checks runner.
 
 This is enforced in `backend/app/terminal/pty_service.py` (and `backend/app/shell_env.py`,
 which the Checks runner shares).
 
 ---
 
-## Why it binds to 127.0.0.1 only
+## Security posture
 
-This app spawns shells and runs commands inside your project workspaces. Binding to
-`0.0.0.0` would expose that to your whole network. It therefore refuses to start on any
-other host unless you explicitly set `I_UNDERSTAND_THE_RISK=true`.
+Lemma refuses non-loopback binding with no bypass. It checks the network peer, Host,
+and exact browser Origin; validates WebSocket origins; denies UI framing; disables
+host execution by default; uses one-use terminal capabilities; bounds model output,
+meetings, subprocess time, output, and input; and keeps research agents entirely
+separate from host tools.
+
+The optional terminal is a trusted-human convenience, **not a sandbox**. Never expose
+this local build directly to a network or untrusted users. Read [SECURITY.md](SECURITY.md)
+for the threat model, data-egress notes, and controls required before any remote or
+multi-user deployment.
 
 ---
 
@@ -134,19 +209,27 @@ other host unless you explicitly set `I_UNDERSTAND_THE_RISK=true`.
   `lsof -ti :8000 | xargs kill` (and `:5173`).
 - **`uv: command not found`** — the installer put it in `~/.local/bin`. Restart your
   shell, or `source $HOME/.local/bin/env`.
-- **The terminal is blank / doesn't respond** — make sure the backend is running; the
-  terminal talks to it over `ws://127.0.0.1:8000/pty/...`. On **macOS**, if a shell
-  seems to hang, it's usually a leftover process — the PTY reaps children on disconnect
-  (`pty_service.py`), so just close and reopen the Terminal tab.
+- **Terminal and Checks say “host tools locked”** — this is the secure default. Set
+  `ENABLE_HOST_EXECUTION=true` in `backend/.env` and restart only if you intend to run
+  trusted local commands. The terminal talks over `ws://127.0.0.1:8000/pty/...` and
+  reaps its complete process group on disconnect.
+- **Workspace creation says Git/Xcode is unavailable (macOS)** — run
+  `sudo xcodebuild -license` in your own Terminal, review and accept Apple's license,
+  then retry. Lemma does not accept system licenses on your behalf.
 - **WebSocket won't connect** — confirm the backend is up
   (`curl http://127.0.0.1:8000/health`) and that no proxy/VPN blocks `ws://localhost`.
   The status-bar dot shows amber while reconnecting, green when connected.
+- **Blank page or “Studio data is unavailable”** — hard-refresh once after upgrading,
+  then confirm both servers are alive. `command -v uv` must print a path and
+  `curl http://127.0.0.1:8000/health` must return JSON. The launcher now stops with a
+  clear error instead of leaving the frontend running when its backend has exited.
 - **The `[vite] failed to connect to websocket` console error** is Vite's own dev-server
   HMR socket, not this app — harmless.
 - **Real models fail with a 401/auth error** — you set `MOCK_LLM=false` without a valid
   key for the model in `config.toml`. Add the key to `backend/.env` or set `MOCK_LLM=true`.
-- **Reset local state** — delete `backend/data/app.db` (recreated on next start) to clear
-  sessions/workspaces; delete `~/ai-company-workspaces/` to remove the project folders.
+- **Reset local state** — after backing up anything you need, remove the specific
+  `backend/data/app.db` file (recreated on next start). Workspace folders are separate
+  under `~/ai-company-workspaces/`; review them individually before removing them.
 
 ---
 
