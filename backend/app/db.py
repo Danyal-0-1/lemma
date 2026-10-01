@@ -3,11 +3,11 @@
 # READING ORDER: backend #17
 #
 # WHAT THIS FILE DOES: creates ONE database engine pointed at backend/data/app.db,
-# knows how to create the tables, and hands out short-lived Sessions for reads/writes.
+# applies versioned migrations, and hands out short-lived Sessions for reads/writes.
 #
 # WHY SQLite + one file: this is a single-user local app. A file-based database needs
 # no server to run, is trivial to inspect, and is easy to delete-and-recreate while
-# learning (there are no migrations in v1 — §8). The data/ dir is gitignored.
+# learning. The data/ dir is gitignored and upgrades are backed up automatically.
 # ─────────────────────────────────────────────────────────────────────────────
 
 from __future__ import annotations
@@ -19,8 +19,10 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from sqlalchemy import event
-from sqlmodel import Session, SQLModel, create_engine
+from sqlmodel import Session, create_engine
 
+from app.database_maintenance import DatabaseLock
+from app.database_migrations import upgrade_database
 from app.settings import get_settings
 
 logger = logging.getLogger("aicompany.db")
@@ -38,6 +40,10 @@ engine = create_engine(
     connect_args={"check_same_thread": False, "timeout": 10},
 )
 
+# Held for the process lifetime after init_db(). The restore CLI takes the same
+# advisory lock, so it cannot replace a database underneath a running backend.
+_runtime_lock: DatabaseLock | None = None
+
 
 @event.listens_for(engine, "connect")
 def _configure_sqlite(connection, _record) -> None:
@@ -50,11 +56,13 @@ def _configure_sqlite(connection, _record) -> None:
 
 
 def init_db() -> None:
-    """Create the data directory and all tables if they don't exist yet.
+    """Create the data directory and migrate the database to the current schema.
 
-    Exists to be called once at startup. Importing app.models here guarantees every
-    table class is registered on SQLModel.metadata before we create_all().
+    Existing pre-Alembic databases are adopted by the baseline migration. Any
+    non-empty database with pending revisions gets a verified online backup first.
     """
+    global _runtime_lock
+
     DATA_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
     # The database contains prompts, findings, and local paths. Keep it private even
     # if the user's umask is unusually permissive. chmod is best-effort on platforms
@@ -66,13 +74,29 @@ def init_db() -> None:
     # Import for its side effect: registering the table classes (CostRecord, …).
     import app.models  # noqa: F401  (imported to register tables, not to use here)
 
-    SQLModel.metadata.create_all(engine)
+    acquired_here = False
+    if _runtime_lock is None:
+        _runtime_lock = DatabaseLock.acquire(DB_PATH)
+        acquired_here = True
+    try:
+        result = upgrade_database(engine, DB_PATH)
+    except Exception:
+        if acquired_here and _runtime_lock is not None:
+            _runtime_lock.release()
+            _runtime_lock = None
+        raise
     if DB_PATH.exists():
         try:
             os.chmod(DB_PATH, 0o600)
         except OSError:
             logger.warning("could not restrict database file permissions")
-    logger.info("database ready at %s", DB_PATH)
+    if result.upgraded:
+        logger.info(
+            "database migrated from %s to %s",
+            result.previous_revisions or ("legacy",),
+            result.current_revisions,
+        )
+    logger.info("database ready at %s (revision %s)", DB_PATH, result.current_revisions)
 
 
 @contextmanager

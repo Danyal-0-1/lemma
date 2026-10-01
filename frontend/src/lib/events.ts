@@ -146,6 +146,10 @@ export interface LabRunCompletedPayload extends LabRunAddress {
   status?: string;
 }
 
+export interface LabRunCancelledPayload extends LabRunAddress {
+  message?: string;
+}
+
 export interface LabRunFailedPayload extends LabRunAddress {
   error?: string;
   message?: string;

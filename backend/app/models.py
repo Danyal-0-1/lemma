@@ -8,7 +8,7 @@
 #
 # WHY these tables: they let a session survive a reload — you can watch an idea
 # evolve (Artifact is append-only) and restore past runs. We add tables over time and
-# recreate the DB in dev; there are no migrations in v1 (§8).
+# preserve it through reviewed Alembic migrations (§8).
 # ─────────────────────────────────────────────────────────────────────────────
 
 from __future__ import annotations
@@ -194,6 +194,8 @@ class LabRun(SQLModel, table=True):
     project_id: str = Field(foreign_key="lab_projects.id", index=True)
     task_id: str | None = Field(default=None, foreign_key="lab_tasks.id", index=True)
     meeting_id: str | None = Field(default=None, foreign_key="lab_meetings.id", index=True)
+    retry_of_run_id: str | None = Field(default=None, foreign_key="lab_runs.id", index=True)
+    attempt: int = 1
     status: str = "running"  # running | completed | failed | cancelled
     tokens_in: int = 0
     tokens_out: int = 0
@@ -246,9 +248,7 @@ class ResearchMeeting(SQLModel, table=True):
     title: str
     agenda: str
     facilitator_agent_id: str = Field(foreign_key="lab_agents.id", index=True)
-    participant_ids: list[str] = Field(
-        default_factory=list, sa_column=Column(JSON, nullable=False)
-    )
+    participant_ids: list[str] = Field(default_factory=list, sa_column=Column(JSON, nullable=False))
     status: str = "planned"  # planned | running | completed | failed | cancelled
     created_at: datetime = Field(default_factory=_utcnow)
     updated_at: datetime = Field(default_factory=_utcnow)
@@ -280,7 +280,290 @@ class ActivityRecord(SQLModel, table=True):
     entity_id: str = Field(index=True)
     run_id: str | None = Field(default=None, index=True)
     agent_id: str | None = Field(default=None, index=True)
-    details: dict[str, object] = Field(
+    details: dict[str, object] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False))
+    created_at: datetime = Field(default_factory=_utcnow)
+
+
+# ── Evidence, governance, and workflow --------------------------------------
+
+
+class ProjectPolicy(SQLModel, table=True):
+    """Per-project data handling and spend/concurrency limits."""
+
+    __tablename__ = "lab_project_policies"
+
+    project_id: str = Field(foreign_key="lab_projects.id", primary_key=True)
+    data_classification: str = "local_only"  # local_only | confidential | public
+    allowed_models: list[str] = Field(default_factory=list, sa_column=Column(JSON, nullable=False))
+    max_run_tokens: int = 50_000
+    max_run_usd: float = 5.0
+    max_project_usd: float = 100.0
+    max_concurrent_runs: int = 2
+    created_at: datetime = Field(default_factory=_utcnow)
+    updated_at: datetime = Field(default_factory=_utcnow)
+
+
+class SourceDocument(SQLModel, table=True):
+    """A locally captured source with immutable content identity and provenance."""
+
+    __tablename__ = "lab_source_documents"
+
+    id: str = Field(default_factory=_uuid, primary_key=True)
+    project_id: str = Field(foreign_key="lab_projects.id", index=True)
+    title: str
+    source_type: str = "note"  # note | url | file | transcript
+    origin: str = ""
+    content: str
+    content_sha256: str = Field(index=True)
+    metadata_json: dict[str, object] = Field(
         default_factory=dict, sa_column=Column(JSON, nullable=False)
     )
+    status: str = "active"  # active | archived
     created_at: datetime = Field(default_factory=_utcnow)
+    updated_at: datetime = Field(default_factory=_utcnow)
+
+
+class SourceExcerpt(SQLModel, table=True):
+    """A stable quotation/locator inside a captured source."""
+
+    __tablename__ = "lab_source_excerpts"
+
+    id: str = Field(default_factory=_uuid, primary_key=True)
+    project_id: str = Field(foreign_key="lab_projects.id", index=True)
+    source_id: str = Field(foreign_key="lab_source_documents.id", index=True)
+    locator: str = ""
+    quote: str
+    start_offset: int | None = None
+    end_offset: int | None = None
+    quote_sha256: str = Field(index=True)
+    created_at: datetime = Field(default_factory=_utcnow)
+
+
+class TaskSourceLink(SQLModel, table=True):
+    """Explicit source packet membership for a research task."""
+
+    __tablename__ = "lab_task_source_links"
+
+    id: str = Field(default_factory=_uuid, primary_key=True)
+    project_id: str = Field(foreign_key="lab_projects.id", index=True)
+    task_id: str = Field(foreign_key="lab_tasks.id", index=True)
+    source_id: str = Field(foreign_key="lab_source_documents.id", index=True)
+    purpose: str = "context"
+    created_at: datetime = Field(default_factory=_utcnow)
+
+
+class FindingReview(SQLModel, table=True):
+    """Append-only human review history for a model-created finding."""
+
+    __tablename__ = "lab_finding_reviews"
+
+    id: str = Field(default_factory=_uuid, primary_key=True)
+    project_id: str = Field(foreign_key="lab_projects.id", index=True)
+    finding_id: str = Field(foreign_key="lab_findings.id", index=True)
+    reviewer: str = "founder"
+    decision: str  # accepted | rejected | needs_revision
+    notes: str = ""
+    created_at: datetime = Field(default_factory=_utcnow)
+
+
+class ResearchClaim(SQLModel, table=True):
+    """A normalized claim that can be supported or contradicted by evidence."""
+
+    __tablename__ = "lab_claims"
+
+    id: str = Field(default_factory=_uuid, primary_key=True)
+    project_id: str = Field(foreign_key="lab_projects.id", index=True)
+    finding_id: str | None = Field(default=None, foreign_key="lab_findings.id", index=True)
+    statement: str
+    confidence: float | None = None
+    status: str = "proposed"  # proposed | accepted | disputed | retired
+    created_at: datetime = Field(default_factory=_utcnow)
+    updated_at: datetime = Field(default_factory=_utcnow)
+
+
+class ClaimEvidence(SQLModel, table=True):
+    """A typed edge between a claim and a durable source excerpt."""
+
+    __tablename__ = "lab_claim_evidence"
+
+    id: str = Field(default_factory=_uuid, primary_key=True)
+    project_id: str = Field(foreign_key="lab_projects.id", index=True)
+    claim_id: str = Field(foreign_key="lab_claims.id", index=True)
+    excerpt_id: str = Field(foreign_key="lab_source_excerpts.id", index=True)
+    stance: str = "supports"  # supports | contradicts | contextualizes
+    note: str = ""
+    created_at: datetime = Field(default_factory=_utcnow)
+
+
+class MeetingOutcome(SQLModel, table=True):
+    """Founder-editable structured decisions extracted from a meeting."""
+
+    __tablename__ = "lab_meeting_outcomes"
+
+    id: str = Field(default_factory=_uuid, primary_key=True)
+    project_id: str = Field(foreign_key="lab_projects.id", index=True)
+    meeting_id: str = Field(foreign_key="lab_meetings.id", index=True)
+    run_id: str | None = Field(default=None, foreign_key="lab_runs.id", index=True)
+    summary: str
+    decisions: list[str] = Field(default_factory=list, sa_column=Column(JSON, nullable=False))
+    disagreements: list[str] = Field(default_factory=list, sa_column=Column(JSON, nullable=False))
+    created_at: datetime = Field(default_factory=_utcnow)
+    updated_at: datetime = Field(default_factory=_utcnow)
+
+
+class ActionItem(SQLModel, table=True):
+    """A meeting follow-up that can be promoted into a research task."""
+
+    __tablename__ = "lab_action_items"
+
+    id: str = Field(default_factory=_uuid, primary_key=True)
+    project_id: str = Field(foreign_key="lab_projects.id", index=True)
+    meeting_id: str | None = Field(default=None, foreign_key="lab_meetings.id", index=True)
+    owner_agent_id: str | None = Field(default=None, foreign_key="lab_agents.id", index=True)
+    title: str
+    details: str = ""
+    status: str = "open"  # open | in_progress | completed | cancelled
+    promoted_task_id: str | None = Field(default=None, foreign_key="lab_tasks.id", index=True)
+    due_at: datetime | None = None
+    created_at: datetime = Field(default_factory=_utcnow)
+    updated_at: datetime = Field(default_factory=_utcnow)
+
+
+class TaskDependency(SQLModel, table=True):
+    """A prerequisite edge in a project's acyclic task graph."""
+
+    __tablename__ = "lab_task_dependencies"
+
+    id: str = Field(default_factory=_uuid, primary_key=True)
+    project_id: str = Field(foreign_key="lab_projects.id", index=True)
+    task_id: str = Field(foreign_key="lab_tasks.id", index=True)
+    depends_on_task_id: str = Field(foreign_key="lab_tasks.id", index=True)
+    created_at: datetime = Field(default_factory=_utcnow)
+
+
+class TraceLink(SQLModel, table=True):
+    """A generic audited edge from research evidence to downstream work."""
+
+    __tablename__ = "lab_trace_links"
+
+    id: str = Field(default_factory=_uuid, primary_key=True)
+    project_id: str = Field(foreign_key="lab_projects.id", index=True)
+    source_type: str
+    source_id: str = Field(index=True)
+    target_type: str
+    target_id: str = Field(index=True)
+    relationship: str = "informs"
+    note: str = ""
+    created_at: datetime = Field(default_factory=_utcnow)
+
+
+class ModelCall(SQLModel, table=True):
+    """Exact prompt, policy snapshot, timing, usage, and outcome for one model call."""
+
+    __tablename__ = "lab_model_calls"
+
+    id: str = Field(default_factory=_uuid, primary_key=True)
+    project_id: str = Field(foreign_key="lab_projects.id", index=True)
+    run_id: str | None = Field(default=None, foreign_key="lab_runs.id", index=True)
+    agent_id: str | None = Field(default=None, foreign_key="lab_agents.id", index=True)
+    stage: str = Field(index=True)
+    model: str = Field(index=True)
+    system_prompt: str
+    user_prompt: str
+    policy_snapshot: dict[str, object] = Field(
+        default_factory=dict, sa_column=Column(JSON, nullable=False)
+    )
+    status: str = "running"  # running | completed | failed | cancelled
+    tokens_in: int = 0
+    tokens_out: int = 0
+    usd: float = 0.0
+    latency_ms: int | None = None
+    error: str | None = None
+    created_at: datetime = Field(default_factory=_utcnow)
+    completed_at: datetime | None = None
+
+
+class LabTemplate(SQLModel, table=True):
+    """Reusable, user-editable project/task/meeting/evaluation setup."""
+
+    __tablename__ = "lab_templates"
+
+    id: str = Field(default_factory=_uuid, primary_key=True)
+    name: str = Field(index=True)
+    kind: str = Field(index=True)  # project | task | meeting | evaluation
+    description: str = ""
+    payload: dict[str, object] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False))
+    status: str = "active"  # active | archived
+    created_at: datetime = Field(default_factory=_utcnow)
+    updated_at: datetime = Field(default_factory=_utcnow)
+
+
+class EvaluationExperiment(SQLModel, table=True):
+    """A bounded prompt/model comparison with explicit evaluation criteria."""
+
+    __tablename__ = "lab_evaluation_experiments"
+
+    id: str = Field(default_factory=_uuid, primary_key=True)
+    project_id: str = Field(foreign_key="lab_projects.id", index=True)
+    name: str
+    prompt: str
+    models: list[str] = Field(default_factory=list, sa_column=Column(JSON, nullable=False))
+    criteria: list[str] = Field(default_factory=list, sa_column=Column(JSON, nullable=False))
+    status: str = "draft"  # draft | running | completed | failed | cancelled
+    created_at: datetime = Field(default_factory=_utcnow)
+    updated_at: datetime = Field(default_factory=_utcnow)
+
+
+class EvaluationCandidate(SQLModel, table=True):
+    """One model's response inside an evaluation experiment."""
+
+    __tablename__ = "lab_evaluation_candidates"
+
+    id: str = Field(default_factory=_uuid, primary_key=True)
+    experiment_id: str = Field(foreign_key="lab_evaluation_experiments.id", index=True)
+    project_id: str = Field(foreign_key="lab_projects.id", index=True)
+    model: str
+    response: str = ""
+    status: str = "queued"  # queued | running | completed | failed
+    tokens_in: int = 0
+    tokens_out: int = 0
+    usd: float = 0.0
+    latency_ms: int | None = None
+    error: str | None = None
+    created_at: datetime = Field(default_factory=_utcnow)
+    completed_at: datetime | None = None
+
+
+class EvaluationScore(SQLModel, table=True):
+    """A human score for one candidate and criterion."""
+
+    __tablename__ = "lab_evaluation_scores"
+
+    id: str = Field(default_factory=_uuid, primary_key=True)
+    candidate_id: str = Field(foreign_key="lab_evaluation_candidates.id", index=True)
+    criterion: str
+    score: float
+    rationale: str = ""
+    reviewer: str = "founder"
+    created_at: datetime = Field(default_factory=_utcnow)
+
+
+class AutomationRun(SQLModel, table=True):
+    """Approval-gated coding-provider plan; execution is disabled by default."""
+
+    __tablename__ = "lab_automation_runs"
+
+    id: str = Field(default_factory=_uuid, primary_key=True)
+    project_id: str | None = Field(default=None, foreign_key="lab_projects.id", index=True)
+    workspace_id: str | None = Field(default=None, foreign_key="workspace.id", index=True)
+    provider: str = "claude"
+    request: str
+    plan: str = ""
+    capabilities: list[str] = Field(default_factory=list, sa_column=Column(JSON, nullable=False))
+    status: str = "planned"  # planned | approved | rejected | running | completed | failed
+    approval_note: str = ""
+    output: str = ""
+    error: str | None = None
+    created_at: datetime = Field(default_factory=_utcnow)
+    approved_at: datetime | None = None
+    completed_at: datetime | None = None

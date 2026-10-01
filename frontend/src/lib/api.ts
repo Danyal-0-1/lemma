@@ -11,7 +11,21 @@
 // hard-coded URLs to update later.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import type { LabSnapshot } from "../lab/types";
+import type {
+  ActionItem,
+  AutomationRun,
+  EvaluationCandidate,
+  EvaluationExperiment,
+  LabRun,
+  LabSnapshot,
+  LabTemplate,
+  ProjectDossier,
+  ProjectPolicy,
+  ResearchClaim,
+  ResearchTask,
+  SourceDocument,
+  TraceLink,
+} from "../lab/types";
 import { normalizeLabSnapshot } from "../lab/types";
 
 /**
@@ -53,6 +67,7 @@ export interface Health {
   version: string;
   mock_llm: boolean;
   enable_host_execution: boolean;
+  enable_headless_coding?: boolean;
 }
 
 /** Fetch backend health once at startup, e.g. to know whether we're in mock mode. */
@@ -509,5 +524,386 @@ export async function runLabMeeting(
   return await labRequest<LabRunResponse>(`/meetings/${encodeURIComponent(meetingId)}/run`, {
     method: "POST",
     body: JSON.stringify({ instructions }),
+  });
+}
+
+// --- Evidence-rich research workflows --------------------------------------
+
+export interface SearchMatch {
+  kind: string;
+  entity_id: string;
+  project_id: string;
+  title: string;
+  snippet: string;
+  rank: number;
+}
+
+export async function searchResearch(
+  query: string,
+  projectId?: string,
+  kinds: string[] = [],
+): Promise<SearchMatch[]> {
+  const result = await labRequest<{ matches: SearchMatch[] }>("/search", {
+    method: "POST",
+    body: JSON.stringify({
+      query,
+      ...(projectId ? { project_id: projectId } : {}),
+      kinds,
+      limit: 50,
+    }),
+  });
+  return result.matches;
+}
+
+export async function listProjectSources(projectId: string): Promise<SourceDocument[]> {
+  return await labRequest(`/projects/${encodeURIComponent(projectId)}/sources`);
+}
+
+export async function createSourceDocument(payload: {
+  project_id: string;
+  title: string;
+  source_type: string;
+  origin?: string;
+  content: string;
+}): Promise<SourceDocument> {
+  return await labRequest("/sources", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function archiveSourceDocument(sourceId: string): Promise<SourceDocument> {
+  return await labRequest(`/sources/${encodeURIComponent(sourceId)}/archive`, {
+    method: "POST",
+  });
+}
+
+export async function createSourceExcerpt(
+  sourceId: string,
+  payload: { quote: string; locator?: string },
+): Promise<{ id: string; source_id: string; quote: string }> {
+  return await labRequest(`/sources/${encodeURIComponent(sourceId)}/excerpts`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function linkSourceToTask(
+  taskId: string,
+  sourceId: string,
+  purpose = "context",
+): Promise<void> {
+  await labRequest(`/tasks/${encodeURIComponent(taskId)}/sources`, {
+    method: "POST",
+    body: JSON.stringify({ source_id: sourceId, purpose }),
+  });
+}
+
+export async function unlinkSourceFromTask(linkId: string): Promise<void> {
+  await labRequest(`/task-source-links/${encodeURIComponent(linkId)}`, {
+    method: "DELETE",
+  });
+}
+
+export async function reviewFinding(
+  findingId: string,
+  decision: "accepted" | "rejected" | "needs_revision",
+  notes = "",
+): Promise<void> {
+  await labRequest(`/findings/${encodeURIComponent(findingId)}/reviews`, {
+    method: "POST",
+    body: JSON.stringify({ decision, notes, reviewer: "founder" }),
+  });
+}
+
+export async function createResearchClaim(payload: {
+  project_id: string;
+  finding_id?: string;
+  statement: string;
+  confidence?: number;
+}): Promise<ResearchClaim> {
+  return await labRequest("/claims", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function attachClaimEvidence(
+  claimId: string,
+  excerptId: string,
+  stance: "supports" | "contradicts" | "contextualizes",
+  note = "",
+): Promise<void> {
+  await labRequest(`/claims/${encodeURIComponent(claimId)}/evidence`, {
+    method: "POST",
+    body: JSON.stringify({ excerpt_id: excerptId, stance, note }),
+  });
+}
+
+export async function getProjectDossier(projectId: string): Promise<ProjectDossier> {
+  return await labRequest(`/projects/${encodeURIComponent(projectId)}/dossier`);
+}
+
+export async function downloadProjectDossier(projectId: string): Promise<void> {
+  const response = await fetch(
+    `${BACKEND_ORIGIN}/api/lab/projects/${encodeURIComponent(projectId)}/dossier.md`,
+  );
+  if (!response.ok) throw await responseError(response, "dossier export failed");
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = `project-${projectId}.md`;
+  anchor.click();
+  URL.revokeObjectURL(url);
+}
+
+export async function getProjectPolicy(projectId: string): Promise<ProjectPolicy> {
+  return await labRequest(`/projects/${encodeURIComponent(projectId)}/policy`);
+}
+
+export async function updateProjectPolicy(
+  projectId: string,
+  policy: Omit<ProjectPolicy, "project_id">,
+): Promise<ProjectPolicy> {
+  return await labRequest(`/projects/${encodeURIComponent(projectId)}/policy`, {
+    method: "PUT",
+    body: JSON.stringify(policy),
+  });
+}
+
+export async function getProjectBudget(projectId: string): Promise<{
+  tokens_used: number;
+  usd_used: number;
+  running: number;
+  limits: ProjectPolicy;
+}> {
+  return await labRequest(`/projects/${encodeURIComponent(projectId)}/budget`);
+}
+
+export async function getProjectRuns(projectId: string): Promise<LabRun[]> {
+  return await labRequest(`/projects/${encodeURIComponent(projectId)}/runs`);
+}
+
+export async function cancelLabRun(runId: string): Promise<LabRun> {
+  return await labRequest(`/runs/${encodeURIComponent(runId)}/cancel`, { method: "POST" });
+}
+
+export async function retryLabRun(runId: string): Promise<LabRun> {
+  return await labRequest(`/runs/${encodeURIComponent(runId)}/retry`, { method: "POST" });
+}
+
+export async function getTaskReadiness(taskId: string): Promise<{
+  ready: boolean;
+  dependencies: Array<{
+    dependency_id: string;
+    task_id: string;
+    title: string;
+    status: string;
+  }>;
+  blockers: Array<{
+    dependency_id: string;
+    task_id: string;
+    title: string;
+    status: string;
+  }>;
+}> {
+  return await labRequest(`/tasks/${encodeURIComponent(taskId)}/readiness`);
+}
+
+export async function addTaskDependency(
+  taskId: string,
+  dependsOnTaskId: string,
+): Promise<void> {
+  await labRequest(`/tasks/${encodeURIComponent(taskId)}/dependencies`, {
+    method: "POST",
+    body: JSON.stringify({ depends_on_task_id: dependsOnTaskId }),
+  });
+}
+
+export async function removeTaskDependency(dependencyId: string): Promise<void> {
+  await labRequest(`/dependencies/${encodeURIComponent(dependencyId)}`, {
+    method: "DELETE",
+  });
+}
+
+export async function recordMeetingOutcome(
+  meetingId: string,
+  payload: { summary: string; decisions: string[]; disagreements: string[] },
+): Promise<void> {
+  await labRequest(`/meetings/${encodeURIComponent(meetingId)}/outcomes`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function createActionItem(payload: {
+  project_id: string;
+  meeting_id?: string;
+  owner_agent_id?: string;
+  title: string;
+  details?: string;
+}): Promise<ActionItem> {
+  return await labRequest("/actions", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function updateActionItem(
+  actionId: string,
+  payload: { status?: "open" | "in_progress" | "completed" | "cancelled"; owner_agent_id?: string },
+): Promise<ActionItem> {
+  return await labRequest(`/actions/${encodeURIComponent(actionId)}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function promoteActionItem(
+  actionId: string,
+  assignedAgentId?: string,
+): Promise<ResearchTask> {
+  return await labRequest(`/actions/${encodeURIComponent(actionId)}/promote`, {
+    method: "POST",
+    body: JSON.stringify(assignedAgentId ? { assigned_agent_id: assignedAgentId } : {}),
+  });
+}
+
+export async function createTraceLink(payload: Omit<TraceLink, "id">): Promise<TraceLink> {
+  return await labRequest("/trace-links", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export interface EvaluationDetail {
+  experiment: EvaluationExperiment;
+  candidates: EvaluationCandidate[];
+  scores: Array<{
+    id: string;
+    candidate_id: string;
+    criterion: string;
+    score: number;
+    rationale: string;
+    reviewer: string;
+  }>;
+}
+
+export async function listEvaluations(projectId: string): Promise<EvaluationExperiment[]> {
+  return await labRequest(`/projects/${encodeURIComponent(projectId)}/evaluations`);
+}
+
+export async function createEvaluation(payload: {
+  project_id: string;
+  name: string;
+  prompt: string;
+  models: string[];
+  criteria: string[];
+}): Promise<EvaluationExperiment> {
+  return await labRequest("/evaluations", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function getEvaluation(experimentId: string): Promise<EvaluationDetail> {
+  return await labRequest(`/evaluations/${encodeURIComponent(experimentId)}`);
+}
+
+export async function runEvaluation(experimentId: string): Promise<EvaluationExperiment> {
+  return await labRequest(`/evaluations/${encodeURIComponent(experimentId)}/run`, {
+    method: "POST",
+  });
+}
+
+export async function cancelEvaluation(experimentId: string): Promise<EvaluationExperiment> {
+  return await labRequest(`/evaluations/${encodeURIComponent(experimentId)}/cancel`, {
+    method: "POST",
+  });
+}
+
+export async function scoreEvaluationCandidate(
+  candidateId: string,
+  criterion: string,
+  score: number,
+  rationale = "",
+): Promise<void> {
+  await labRequest(`/evaluation-candidates/${encodeURIComponent(candidateId)}/scores`, {
+    method: "POST",
+    body: JSON.stringify({ criterion, score, rationale, reviewer: "founder" }),
+  });
+}
+
+export async function listAutomations(): Promise<AutomationRun[]> {
+  return await labRequest("/automations");
+}
+
+export async function createAutomationPlan(payload: {
+  project_id?: string;
+  workspace_id?: string;
+  request: string;
+  plan?: string;
+  capabilities: string[];
+}): Promise<AutomationRun> {
+  return await labRequest("/automations", {
+    method: "POST",
+    body: JSON.stringify({ provider: "claude", ...payload }),
+  });
+}
+
+export async function decideAutomation(
+  automationId: string,
+  decision: "approve" | "reject",
+  note = "",
+): Promise<AutomationRun> {
+  return await labRequest(`/automations/${encodeURIComponent(automationId)}/decision`, {
+    method: "POST",
+    body: JSON.stringify({ decision, note }),
+  });
+}
+
+export async function runAutomation(automationId: string): Promise<AutomationRun> {
+  return await labRequest(`/automations/${encodeURIComponent(automationId)}/run`, {
+    method: "POST",
+  });
+}
+
+export async function cancelAutomation(automationId: string): Promise<AutomationRun> {
+  return await labRequest(`/automations/${encodeURIComponent(automationId)}/cancel`, {
+    method: "POST",
+  });
+}
+
+export async function listLabTemplates(kind?: string): Promise<LabTemplate[]> {
+  const query = kind ? `?kind=${encodeURIComponent(kind)}` : "";
+  return await labRequest(`/templates${query}`);
+}
+
+export async function createLabTemplate(payload: {
+  name: string;
+  kind: string;
+  description?: string;
+  payload: Record<string, unknown>;
+}): Promise<LabTemplate> {
+  return await labRequest("/templates", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function archiveLabTemplate(templateId: string): Promise<LabTemplate> {
+  return await labRequest(`/templates/${encodeURIComponent(templateId)}/archive`, {
+    method: "POST",
+  });
+}
+
+export async function instantiateLabTemplate(
+  templateId: string,
+  overrides: Record<string, unknown>,
+): Promise<{ kind: string; entity: Record<string, unknown> }> {
+  return await labRequest(`/templates/${encodeURIComponent(templateId)}/instantiate`, {
+    method: "POST",
+    body: JSON.stringify({ overrides }),
   });
 }

@@ -5,6 +5,7 @@ import { create } from "zustand";
 import { getLabSnapshot, type LabRunResponse } from "../lib/api";
 import type {
   Event,
+  LabRunCancelledPayload,
   LabRunCompletedPayload,
   LabRunFailedPayload,
   LabRunStartedPayload,
@@ -13,6 +14,7 @@ import type {
   LabTurnStartedPayload,
 } from "../lib/events";
 import type { LabSnapshot, LabView, LiveRun, LiveTurn } from "./types";
+import { currentView, writeViewToUrl } from "./navigation";
 
 const EMPTY: LabSnapshot = {
   departments: [],
@@ -40,6 +42,7 @@ interface LabState {
   selectedTaskId: string | null;
   selectedMeetingId: string | null;
   setView: (view: LabView) => void;
+  restoreView: (view: LabView) => void;
   selectDepartment: (id: string | null) => void;
   selectAgent: (id: string | null) => void;
   selectProject: (id: string | null) => void;
@@ -149,7 +152,7 @@ function finishTurn(run: LiveRun, payload: LabTurnCompletedPayload): LiveRun {
 }
 
 export const useLabStore = create<LabState>((set, get) => ({
-  view: "hq",
+  view: currentView(),
   snapshot: EMPTY,
   liveRuns: {},
   loading: true,
@@ -161,7 +164,11 @@ export const useLabStore = create<LabState>((set, get) => ({
   selectedTaskId: null,
   selectedMeetingId: null,
 
-  setView: (view) => set({ view }),
+  setView: (view) => {
+    writeViewToUrl(view);
+    set({ view });
+  },
+  restoreView: (view) => set({ view }),
   selectDepartment: (id) => set({ selectedDepartmentId: id, selectedAgentId: null }),
   selectAgent: (id) =>
     set((state) => {
@@ -262,6 +269,11 @@ export const useLabStore = create<LabState>((set, get) => ({
           next = { ...existing, status: payload.status ?? "completed", error: null };
           break;
         }
+        case "lab_run_cancelled": {
+          const payload = event.payload as unknown as LabRunCancelledPayload;
+          next = { ...existing, status: "cancelled", error: payload.message ?? null };
+          break;
+        }
         case "lab_run_failed": {
           const payload = event.payload as unknown as LabRunFailedPayload;
           next = { ...existing, status: "failed", error: payload.error ?? payload.message ?? "Run failed" };
@@ -273,7 +285,7 @@ export const useLabStore = create<LabState>((set, get) => ({
       return { liveRuns: { ...state.liveRuns, [runId]: next } };
     });
 
-    if (["lab_run_completed", "lab_run_failed", "lab_result_created", "lab_finding_created", "lab_meeting_message"].includes(event.event)) {
+    if (["lab_run_completed", "lab_run_cancelled", "lab_run_failed", "lab_result_created", "lab_finding_created", "lab_meeting_message"].includes(event.event)) {
       window.setTimeout(() => void get().refresh(), 150);
     }
   },

@@ -27,10 +27,14 @@ your research organization, its conversations, and its reviewed outputs.
 Built milestone by milestone (see [`PROMPT.md`](PROMPT.md) §14). Current progress lives
 in [`CLAUDE.md`](CLAUDE.md) under *Milestone status*, and in `git log --oneline`.
 
-**R&D Studio and M0–M8 work end to end.** Departments, mission teams, agent duty
-cards, projects, tasks, addressed live runs, bounded meetings, findings, and an audit
-feed sit alongside the original ideation → Spec → workspace workflow. The whole app
-is demoable in mock mode with no keys and no cost.
+**The evidence-rich R&D Studio and M0–M8 work end to end; M9 is available as an
+explicitly gated option.** Alongside departments, agents, projects, tasks, meetings,
+and findings, Lemma now includes captured-source provenance, exact excerpts, human
+reviews, claims/evidence links, dependency-aware task queues, searchable history,
+project dossiers, model comparisons, per-project policies, retryable run history, and
+reusable templates. The whole research path is demoable in mock mode with no keys or
+cost. Optional headless coding remains disabled unless the operator crosses every
+separate approval and configuration gate.
 
 ---
 
@@ -71,6 +75,29 @@ Then open **http://localhost:5173**.
 
 ---
 
+## Database backups and migrations
+
+Startup applies versioned Alembic migrations automatically. Before changing any
+existing schema, Lemma creates a WAL-consistent SQLite snapshot under
+`backend/data/backups/`, runs a full integrity check, and writes a checksum metadata
+sidecar. Fresh databases do not create an empty backup.
+
+```bash
+make db-backup                         # safe while Lemma is running
+make db-migrate                        # explicit upgrade to the current schema
+cd backend
+uv run python -m app.db_admin verify data/backups/<backup>.db --require-metadata
+uv run python -m app.db_admin restore data/backups/<backup>.db --yes
+```
+
+Stop Lemma before `migrate` or `restore`; the backend holds a database lock so a
+restore cannot replace a database in use. Restore verifies the backup and its SHA-256
+sidecar, then makes a verified `pre_restore` backup of the current database before an
+atomic replacement. These local backups contain readable research content and are not
+encrypted or authenticated release artifacts.
+
+---
+
 ## Packaged Linux installation
 
 Linux releases can be built as an offline, per-architecture bundle and optionally
@@ -81,9 +108,12 @@ make linux-bundle
 make linux-deb BUNDLE=linux_install/dist/lemma-<version>-linux-<arch>
 ```
 
-The build requires pre-populated npm and uv caches. See the
+Every artifact carries a lock-derived CycloneDX dependency SBOM. Release operators
+can optionally add detached minisign signatures without changing the normal unsigned
+workflow. The build requires pre-populated npm and uv caches. See the
 [`linux_install` guide](linux_install/README.md) for prerequisites, portable and
-Debian installation, upgrades, data locations, security notes, and limitations.
+Debian installation, signing and verification, upgrades, data locations, security
+notes, and limitations.
 
 ---
 
@@ -94,17 +124,22 @@ Debian installation, upgrades, data locations, security notes, and limitations.
 2. Add two or three agents. Give each one a role, mission, duties, the issues it must
    consider, ranked priorities, and a communication scope. These fields form its Duty
    Card; they do not grant tools or machine permissions.
-3. Open **Research**, create a project, then create a task with one assigned agent,
-   research objective, context, and expected output. Run it and watch its own addressed
-   stream without mixing it into another agent's work.
-4. Open **Meetings**, choose a project, facilitator, and permitted participants, and
+3. Open **Research**, create a project, then create an editable task with one assigned
+   agent, research objective, context, expected output, and any prerequisite tasks.
+4. Open **Knowledge** to capture a source, preserve a checksum and exact excerpt, link
+   it into the task's bounded source packet, and run the task. Review its finding,
+   record a claim, attach supporting or contradicting evidence, search the local FTS5
+   index, and export the project's Markdown dossier.
+5. Open **Meetings**, choose a project, facilitator, and permitted participants, and
    write an agenda. Running the room collects one bounded contribution per participant
-   and then asks the facilitator for a synthesis. The transcript remains durable.
-5. Use **HQ** to see the organization at a glance, recent activity, work in flight,
-   and completed outputs. Use **Security** to see which capabilities are deliberately
-   unavailable.
-6. Open **Workbench** whenever you want the original ideation crew, specs, files,
-   diffs, checks, terminal, and mentor.
+   and then asks the facilitator for a synthesis. Record the human outcome and action
+   items, then promote an action into a traceable research task.
+6. Use **Evaluations** for a bounded side-by-side model comparison and human scoring.
+   Use **Operations** to inspect/cancel/retry attempts, set model allowlists and
+   cumulative budgets, and create or instantiate reusable templates.
+7. Use **HQ** for the organization overview and **Security** for capability boundaries.
+   Open **Workbench** for the original ideation crew, specs, files, diffs, checks,
+   terminal, and mentor.
 
 > Research outputs are model syntheses, not automatically verified evidence. The
 > secure default gives research agents no browser, shell, filesystem, connector, or
@@ -186,15 +221,42 @@ Claude Code or this app.** If that variable is set, the `claude` CLI bills your
 This is enforced in `backend/app/terminal/pty_service.py` (and `backend/app/shell_env.py`,
 which the Checks runner shares).
 
+### Optional approval-gated headless coding (M9)
+
+The interactive terminal remains the default coding workflow. To expose the optional
+Claude headless adapter, all of these must be true:
+
+```bash
+ENABLE_HOST_EXECUTION=true
+LEMMA_ENABLE_HEADLESS_CODING=true
+LEMMA_HEADLESS_AGENT_EXECUTABLE=/absolute/path/to/claude
+LEMMA_HEADLESS_AGENT_TIMEOUT_SECONDS=900
+```
+
+Restart Lemma, create a plan against an active workspace in **Operations →
+Automation**, review its request, plan, and recorded capability intent, then approve
+and run it as a separate action. The backend accepts only the audited Claude adapter,
+uses fixed arguments rather than a shell, strips credentials from its environment,
+confines its working directory to the configured workspace root, bounds time/output,
+and kills the process group on cancellation or shutdown.
+
+This remains a trusted host process, not an OS sandbox: the external CLI runs with
+your user permissions, and its recorded capability list is approval/audit context,
+not filesystem or network isolation. Confirm the CLI's login and subscription or
+metered billing behavior before every real use. Leave either switch off if you do not
+need it.
+
 ---
 
 ## Security posture
 
 Lemma refuses non-loopback binding with no bypass. It checks the network peer, Host,
 and exact browser Origin; validates WebSocket origins; denies UI framing; disables
-host execution by default; uses one-use terminal capabilities; bounds model output,
-meetings, subprocess time, output, and input; and keeps research agents entirely
-separate from host tools.
+host and headless execution by default; uses one-use terminal capabilities; bounds
+model output, linked-source context, cumulative run budgets, meetings, subprocess
+time/output/input; and keeps ordinary research agents entirely separate from host
+tools. Exact prompts, policy snapshots, model usage, and retry lineage are retained
+locally for auditability.
 
 The optional terminal is a trusted-human convenience, **not a sandbox**. Never expose
 this local build directly to a network or untrusted users. Read [SECURITY.md](SECURITY.md)
@@ -213,6 +275,9 @@ multi-user deployment.
   `ENABLE_HOST_EXECUTION=true` in `backend/.env` and restart only if you intend to run
   trusted local commands. The terminal talks over `ws://127.0.0.1:8000/pty/...` and
   reaps its complete process group on disconnect.
+- **An approved headless job still will not run** — confirm both execution switches,
+  an active recorded workspace, and an absolute executable path. The executable must
+  exist, be executable, and not be world-writable. Approval alone never unlocks M9.
 - **Workspace creation says Git/Xcode is unavailable (macOS)** — run
   `sudo xcodebuild -license` in your own Terminal, review and accept Apple's license,
   then retry. Lemma does not accept system licenses on your behalf.

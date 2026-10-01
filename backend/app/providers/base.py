@@ -74,7 +74,11 @@ class ModelProvider(Protocol):
     """
 
     def stream_chat(
-        self, model: str, messages: list[ChatMessage]
+        self,
+        model: str,
+        messages: list[ChatMessage],
+        *,
+        max_output_tokens: int | None = None,
     ) -> AsyncIterator[StreamEvent]:
         """Stream a chat completion for `messages` using `model`.
 

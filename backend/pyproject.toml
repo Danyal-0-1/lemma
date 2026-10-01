@@ -27,6 +27,7 @@ dependencies = [
     "python-dotenv>=1.0",     # load backend/.env into the process (only this process)
     "litellm>=1.51",          # M2: one interface over DeepSeek/Anthropic/OpenAI/local
     "sqlmodel>=0.0.22",       # M2+: SQLite persistence (CostRecord now; more in M3)
+    "alembic>=1.14",          # versioned, backup-protected database schema upgrades
 ]
 
 # Development-only dependencies: test runner, async test support, linter, and the

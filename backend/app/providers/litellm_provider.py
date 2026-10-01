@@ -63,7 +63,12 @@ class LiteLLMProvider:
     MOCK_LLM=false and a matching API key is configured.
     """
 
-    async def _open_stream(self, model: str, payload: list[dict[str, str]]) -> AsyncIterator:
+    async def _open_stream(
+        self,
+        model: str,
+        payload: list[dict[str, str]],
+        max_output_tokens: int | None = None,
+    ) -> AsyncIterator:
         """Start a streaming completion, retrying transient failures with backoff.
 
         Exists to isolate the fragile part — establishing the connection — so the
@@ -80,7 +85,7 @@ class LiteLLMProvider:
                     messages=payload,
                     stream=True,
                     stream_options={"include_usage": True},
-                    max_tokens=MAX_OUTPUT_TOKENS,
+                    max_tokens=min(max_output_tokens or MAX_OUTPUT_TOKENS, MAX_OUTPUT_TOKENS),
                     timeout=REQUEST_TIMEOUT_SECONDS,
                 )
             except TRANSIENT_ERRORS as error:
@@ -96,11 +101,15 @@ class LiteLLMProvider:
                 await asyncio.sleep(delay)
 
     async def stream_chat(
-        self, model: str, messages: list[ChatMessage]
+        self,
+        model: str,
+        messages: list[ChatMessage],
+        *,
+        max_output_tokens: int | None = None,
     ) -> AsyncIterator[StreamEvent]:
         """Stream a real completion: yield text chunks, then one StreamDone with usage."""
         payload = [message.model_dump() for message in messages]
-        stream = await self._open_stream(model, payload)
+        stream = await self._open_stream(model, payload, max_output_tokens)
 
         # We accumulate the answer so we can estimate output tokens if the provider
         # doesn't send usage (some don't). Input tokens we can count up front.

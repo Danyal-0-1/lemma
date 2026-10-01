@@ -16,6 +16,7 @@
 # --- Backend local state (recreated on demand; see db.py). Not shared between machines.
 backend/data/
 backend/**/__pycache__/
+**/__pycache__/
 backend/**/*.pyc
 .pytest_cache/
 .ruff_cache/

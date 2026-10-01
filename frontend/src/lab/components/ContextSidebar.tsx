@@ -10,7 +10,10 @@ const TITLES: Record<ResearchView, string> = {
   hq: "R&D Studio",
   organization: "Organization",
   research: "Research",
+  knowledge: "Evidence library",
+  evaluations: "Model arena",
   meetings: "Meeting rooms",
+  operations: "Operations",
   security: "Security",
 };
 
@@ -52,7 +55,10 @@ function HqExplorer() {
         {([
           ["organization", "Organization", snapshot.agents.length],
           ["research", "Research board", snapshot.tasks.length],
+          ["knowledge", "Evidence library", snapshot.findings.length],
+          ["evaluations", "Model arena", 0],
           ["meetings", "Meeting rooms", snapshot.meetings.length],
+          ["operations", "Operations", snapshot.runs.length],
           ["security", "Security center", 0],
         ] as const).map(([id, label, count]) => (
           <button key={id} type="button" className="lab-explorer-row" onClick={() => setView(id)}>
@@ -188,7 +194,7 @@ function SecurityExplorer() {
         <div className="lab-explorer-row">Communication scope</div>
       </Section>
       <Section label="POLICY">
-        <p className="lab-sidebar-note">Secure MVP: synthesis only. No autonomous web, external tools, or automatic file attachment.</p>
+        <p className="lab-sidebar-note">Ordinary research agents are synthesis-only: no autonomous web, host tools, or implicit file attachment. Optional M9 jobs use a separate approval boundary.</p>
       </Section>
     </>
   );
@@ -202,7 +208,10 @@ export default function ContextSidebar({ view }: { view: ResearchView }) {
         {view === "hq" && <HqExplorer />}
         {view === "organization" && <OrganizationExplorer />}
         {view === "research" && <ResearchExplorer />}
+        {view === "knowledge" && <ResearchExplorer />}
+        {view === "evaluations" && <ResearchExplorer />}
         {view === "meetings" && <MeetingExplorer />}
+        {view === "operations" && <ResearchExplorer />}
         {view === "security" && <SecurityExplorer />}
       </div>
     </aside>

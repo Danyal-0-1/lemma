@@ -6,13 +6,16 @@ Files: BUILD_INFO
  PYTHON_ABI
  VERSION
  manifest.sha256
+ manifest.sha256.minisig
  install.sh
  uninstall.sh
+ verify-release.sh
  bin/*
  libexec/*
  share/applications/*
  share/doc/lemma-linux/LICENSE
  share/doc/lemma-linux/README.md
+ share/doc/lemma-linux/SBOM.cdx.json
  share/doc/lemma-linux/THIRD_PARTY_NOTICES.md
  share/icons/*
  share/lemma/app/*
@@ -48,7 +51,8 @@ License: various
  that those components are MIT-licensed.
  .
  JavaScript and Python inventories are recorded in
- share/doc/lemma-linux/THIRD_PARTY_NOTICES.md. JavaScript license texts are in
+ share/doc/lemma-linux/THIRD_PARTY_NOTICES.md and the CycloneDX document
+ share/doc/lemma-linux/SBOM.cdx.json. JavaScript license texts are in
  share/doc/lemma-linux/third-party/javascript/node_modules/. Python wheel
  license texts remain in share/lemma/python/*.dist-info/licenses/ or alongside
  their distribution metadata as share/lemma/python/*.dist-info/LICENSE*.

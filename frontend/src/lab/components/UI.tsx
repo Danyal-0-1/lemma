@@ -1,7 +1,8 @@
 // Shared, accessible primitives for the R&D Studio. Styling lives in theme.css.
 
-import { useEffect, type ButtonHTMLAttributes, type CSSProperties, type ReactNode } from "react";
+import { useId, useRef, type ButtonHTMLAttributes, type CSSProperties, type ReactNode } from "react";
 
+import { useDialogFocus } from "../../lib/dialog";
 import { Icon, type IconName } from "./Icons";
 
 export function Button({
@@ -55,26 +56,26 @@ export function Modal({
   children: ReactNode;
   onClose: () => void;
 }) {
-  useEffect(() => {
-    function onKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") onClose();
-    }
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [onClose]);
+  const dialogRef = useRef<HTMLElement>(null);
+  const titleId = useId();
+  const descriptionId = useId();
+  useDialogFocus(dialogRef, onClose);
 
   return (
     <div className="lab-modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
       <section
+        ref={dialogRef}
         role="dialog"
         aria-modal="true"
-        aria-labelledby="lab-modal-title"
+        aria-labelledby={titleId}
+        aria-describedby={description ? descriptionId : undefined}
         className="lab-modal"
+        tabIndex={-1}
       >
         <header className="lab-modal-header">
           <div>
-            <h2 id="lab-modal-title">{title}</h2>
-            {description && <p>{description}</p>}
+            <h2 id={titleId}>{title}</h2>
+            {description && <p id={descriptionId}>{description}</p>}
           </div>
           <button type="button" className="lab-icon-button" onClick={onClose} aria-label="Close dialog">
             <Icon name="close" size={18} />

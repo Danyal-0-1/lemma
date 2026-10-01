@@ -11,6 +11,9 @@ very different trust levels, so the platform keeps them separate.
   filesystem, shell, network-tool, connector, or secret capability.
 - Host command execution is disabled by default. Set `ENABLE_HOST_EXECUTION=true`
   only when you want to use the human-operated terminal and checks workbench.
+- Optional headless coding has an independent off-by-default switch. Enabling the
+  terminal does not enable automation, and approving a plan does not bypass either
+  runtime switch or executable/workspace validation.
 - Mock mode is enabled by default, so a fresh install sends no research to an
   external model provider and incurs no model cost.
 - Agent communication is explicit and bounded. An agent may be isolated, restricted
@@ -34,6 +37,22 @@ Production multi-user or remote deployment requires an isolated execution worker
 (rootless container or microVM), authentication, TLS, per-project authorization,
 resource quotas, and an audited network proxy. The current local application does
 not claim to provide those controls.
+
+### Optional headless automation
+
+M9 is deliberately a second trust boundary. It accepts only a persisted, explicitly
+approved plan for an active Lemma workspace and the audited Claude adapter. The
+executable must be an absolute, existing, executable, non-world-writable file. Lemma
+uses a fixed argument vector (no shell expansion), the shared credential-stripped
+environment, workspace-root validation, timeout and output caps, durable status, and
+process-group termination on cancellation or shutdown.
+
+Those controls reduce accidental scope; they do not turn the external CLI into a
+sandbox. It still runs as your operating-system user and may have access that is not
+expressed by the plan. The recorded `read_workspace`, `write_workspace`, and
+`run_checks` capabilities are human approval/audit intent, not kernel-enforced
+filesystem or network policy. Review the plan and CLI billing/account state, inspect
+the resulting diff, and keep M9 disabled for untrusted requests or workspaces.
 
 ## Browser boundary
 
@@ -59,15 +78,24 @@ another process already running as the same OS user.
   the current branch's one configured HTTPS or SSH upstream. Force pushes, hooks,
   external diff drivers, embedded URL credentials, and interactive prompts are denied.
 - Research prompts can be sent to the configured model provider when mock mode is
-  disabled. Do not paste confidential data unless that provider is approved for it.
+  disabled. Task briefs plus the bounded contents of explicitly linked captured
+  sources, and meeting context, may be included. Do not capture or link confidential
+  data unless that provider and model are approved for it.
+- Project policies enforce model allowlists, cumulative per-run token/cost limits,
+  project spend ceilings, and concurrency preflight, while recording a
+  data-classification label for human governance.
+  These are local guardrails, not a provider-side billing cap; provider usage can be
+  reported only after a call completes, and pricing configuration must remain current.
 - Model output is a synthesis, not verified evidence. The current secure research
   agents do not browse the web automatically. Validate important claims and sources
   before relying on or publishing them.
 
 ## Stored data
 
-Departments, agent duty cards, tasks, meeting transcripts, findings, paths, and model
-cost records are stored in the local SQLite database under `backend/data/` during
+Departments, agent duty cards, captured source bodies/excerpts, claims, task briefs,
+meeting transcripts/outcomes, findings, exact model prompts, policy snapshots,
+evaluation responses/scores, automation plans/output, paths, and cost records are
+stored in the local SQLite database under `backend/data/` during
 development or `${XDG_DATA_HOME:-~/.local/share}/lemma/data/` in an installed Linux
 build. Configuration, data, operational state, versioned source copies, and project
 workspaces have separate XDG or home-directory lifecycles; normal package upgrades and
@@ -81,19 +109,36 @@ and meeting content remain readable and may be confidential. Protect or remove b
 SQLite database and state-vault history when erasing local research. Do not put
 credentials in agent instructions, task briefs, or meeting agendas.
 
+The local FTS5 table is a derived index of project, task, finding, source, claim, and
+meeting text. Rebuilding or deleting the index does not erase canonical content; erase
+the database, backups, and state-vault history when the underlying research must be
+removed. Exported dossiers are ordinary readable Markdown and require the same care.
+
+Pending schema migrations automatically create a consistent database snapshot under
+the data directory's private `backups/` folder. Manual backups use the same SQLite
+online-backup path and include integrity checks plus a SHA-256 metadata sidecar; restore
+refuses a missing or mismatched sidecar and cannot run while the backend holds the
+database lock. Checksums detect corruption, not a malicious rewrite of both files, and
+the backups are not encrypted. Protect, retain, and erase them like the live database.
+
 ## Linux release integrity
 
 The offline Linux builder excludes `.env`, the live database, credential-shaped source
 files, and private-key material. Each bundle has a complete SHA-256 manifest, and the
 portable archive and Debian package have separate checksum files. The portable installer
-and Debian packager both verify that manifest before accepting a bundle.
+and Debian packager both verify that manifest before accepting a bundle. A deterministic
+CycloneDX SBOM generated from the locked JavaScript and production Python dependencies is
+covered by the manifest and validated during installation/packaging.
 
-These hashes detect corruption or modification but do **not** authenticate a release;
-the project does not currently sign archives or Debian packages. Obtain artifacts and
-checksums through a trusted channel. A release also contains architecture- and exact
-Python-minor-specific native dependencies, so a mismatched interpreter is rejected.
-Packaging does not widen the deployment boundary: installed services still bind only
-to loopback and remain intended for one trusted operating-system user.
+These hashes detect corruption or modification but do **not** authenticate an unsigned
+release. Release operators may optionally create detached minisign signatures for the
+bundle manifest, portable archive, and local Debian package. Consumers must supply a
+public key obtained through an independent trusted channel to make verification
+mandatory; a key delivered only beside an untrusted artifact is not a trust root. A
+release also contains architecture- and exact Python-minor-specific native dependencies,
+so a mismatched interpreter is rejected. Packaging does not widen the deployment
+boundary: installed services still bind only to loopback and remain intended for one
+trusted operating-system user.
 
 ## Recommended deployment controls
 

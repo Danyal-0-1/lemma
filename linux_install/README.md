@@ -30,6 +30,10 @@ Build releases on Linux, not macOS or Windows. The host needs:
 - all packages referenced by `frontend/package-lock.json` and `backend/uv.lock`
   already present in the local npm and uv caches.
 
+[`minisign`](https://jedisct1.github.io/minisign/) is optional. It is needed only
+when a release operator signs artifacts or a consumer requires signature
+verification. Ordinary offline builds and installs do not require it.
+
 The build deliberately runs package installation in offline mode. On a connected
 preparation machine with the same operating system, CPU architecture, and Python
 minor version, populate the caches once:
@@ -79,8 +83,12 @@ lemma-<version>-linux-<arch>.tar.gz.sha256
 
 The directory is directly installable. The archive is the portable release to
 transfer. Each bundle carries top-level `install.sh`, `uninstall.sh`, `BUILD_INFO`,
-`PYTHON_ABI`, and a complete `manifest.sha256`; third-party notices live below
-`share/doc/lemma-linux/`. Verify the archive before extraction:
+`PYTHON_ABI`, and a complete `manifest.sha256`; third-party notices and the
+CycloneDX 1.5 software bill of materials (SBOM) live below
+`share/doc/lemma-linux/`. The deterministic `SBOM.cdx.json` inventories the exact
+JavaScript lock and the production Python requirements exported from `uv.lock`.
+It is covered by the bundle manifest and is also carried unchanged by the Debian
+package. Verify an unsigned archive before extraction:
 
 ```bash
 cd linux_install/dist
@@ -98,6 +106,42 @@ Useful build options are:
 The builder refuses to overwrite an existing release. Remove or relocate an old
 artifact deliberately before rebuilding. `SOURCE_DATE_EPOCH` may be set to control
 archive timestamps; otherwise the most recent commit time is used.
+
+### Optional release signatures
+
+Minisign signatures authenticate artifacts only when the public key was obtained
+independently from a trusted maintainer. Do not distribute a newly supplied public
+key beside an untrusted artifact and treat that as authentication. Keep the secret
+key outside the repository and output directory. A release operator can generate a
+key once and build a signed bundle without network access:
+
+```bash
+minisign -G -p /secure/location/lemma-release.pub \
+  -s /secure/location/lemma-release.key
+./linux_install/build.sh \
+  --minisign-secret-key /secure/location/lemma-release.key
+```
+
+This adds `manifest.sha256.minisig` inside the bundle and
+`lemma-<version>-linux-<arch>.tar.gz.minisig` beside the archive. The detached
+manifest signature is deliberately not listed by the manifest it authenticates.
+Verify the archive before extraction, then the complete extracted bundle:
+
+```bash
+./linux_install/verify-release.sh \
+  --public-key /trusted/location/lemma-release.pub \
+  --artifact ./linux_install/dist/lemma-<version>-linux-<arch>.tar.gz
+tar -xzf ./linux_install/dist/lemma-<version>-linux-<arch>.tar.gz
+./linux_install/verify-release.sh \
+  --public-key /trusted/location/lemma-release.pub \
+  --bundle ./lemma-<version>-linux-<arch>
+```
+
+The verifier authenticates the signature before trusting a manifest or artifact,
+then checks exact manifest coverage/checksums and validates the SBOM. You can also
+use `minisign -V` directly. Losing the public key does not make unsigned builds
+unusable; it only means their SHA-256 files provide integrity rather than publisher
+authentication.
 
 ## Portable installation
 
@@ -132,6 +176,18 @@ Do not mix that layout with the Debian package. See every option with:
 ```bash
 ./linux_install/install.sh --help
 ```
+
+For a signed bundle, make authentication mandatory during installation by passing
+the independently trusted public-key file. Installation fails if the signature is
+missing or invalid:
+
+```bash
+"$BUNDLE/install.sh" --bundle "$BUNDLE" \
+  --minisign-public-key /trusted/location/lemma-release.pub
+```
+
+A signed bundle installed without that option produces a warning and receives only
+the same checksum validation as an unsigned bundle.
 
 To uninstall the portable application, use the matching uninstall script rather
 than deleting individual desktop or service files:
@@ -208,6 +264,23 @@ delete those files as that user only when their research history and workspaces 
 no longer needed. `dpkg -i` can install the package directly, but APT is preferred
 because it reports or resolves missing dependencies.
 
+To require authentication of the input bundle and optionally sign the finished
+package, use either or both minisign options:
+
+```bash
+./linux_install/build-deb.sh \
+  --bundle ./linux_install/dist/lemma-<version>-linux-<arch> \
+  --minisign-public-key /trusted/location/lemma-release.pub \
+  --minisign-secret-key /secure/location/lemma-release.key
+./linux_install/verify-release.sh \
+  --public-key /trusted/location/lemma-release.pub \
+  --artifact ./linux_install/dist/lemma_<debian-version>_<deb-arch>.deb
+```
+
+The secret-key option adds a detached `.deb.minisig`; it is optional and does not
+replace distribution-native repository metadata/signing when packages are later
+published through an APT repository.
+
 ## Runtime commands
 
 The `lemma` launcher controls either installation format:
@@ -248,6 +321,12 @@ The configuration is created on first start from `assets/env.default` with mode
 you intentionally set `MOCK_LLM=false`; set `ENABLE_HOST_EXECUTION=true` only when
 you intend to enable the human-operated terminal and checks.
 
+Optional headless coding stays locked behind a second switch. It additionally needs
+`LEMMA_ENABLE_HEADLESS_CODING=true`, an absolute
+`LEMMA_HEADLESS_AGENT_EXECUTABLE`, and a separately approved plan in Operations.
+Review the root `SECURITY.md` and confirm the external CLI's billing/account mode
+first; this process runs as the current user and is not a sandbox.
+
 `WORKSPACES_DIR` can relocate newly created project repositories. Existing
 repositories are not moved automatically. The SQLite database contains research
 projects, prompts, findings, meeting transcripts, local paths, and cost records;
@@ -263,9 +342,14 @@ research data.
 
 ## Security notes
 
-- Verify the archive checksum and the internal `manifest.sha256` before trusting a
-  transferred release. Checksums detect changes; they do not authenticate an
-  unsigned release, so obtain artifacts through a trusted channel.
+- Verify the archive checksum and the internal `manifest.sha256` before using a
+  transferred release. Checksums detect changes but do not authenticate an unsigned
+  release. When `.minisig` files are published, require them with a public key obtained
+  through an independent trusted channel; otherwise obtain artifacts themselves
+  through a trusted channel.
+- Review `share/doc/lemma-linux/SBOM.cdx.json` for the machine-readable dependency
+  inventory. It supports auditing and scanning but is not itself proof that a
+  dependency is safe.
 - The backend and static frontend always bind to loopback. Do not place this build
   behind a network proxy or expose it to other users.
 - Provider keys live only in the private `.env` file. The service starts from a
@@ -275,6 +359,9 @@ research data.
   prompts and context leave the machine for the configured provider.
 - Host execution is disabled by default. When enabled, the terminal runs with the
   current operating-system user's permissions and is **not a sandbox**.
+- Headless coding is independently disabled by default. Enabling it does not remove
+  the per-job approval, active-workspace, executable, timeout, output, or process-group
+  checks, but those controls are still not OS-level filesystem/network isolation.
 - The systemd user unit adds process hardening, but it is not an isolation boundary
   for deliberately enabled host commands.
 
@@ -289,7 +376,9 @@ tree is intentionally keyed as `app-<version>`, so reusing a version would prese
 that earlier source tree instead of seeding the changed backend.
 
 1. Back up `~/.config/lemma/`, `~/.local/share/lemma/data/`, and any project
-   workspaces that matter.
+   workspaces that matter. On first start after an upgrade, Lemma also creates a
+   verified SQLite snapshot in `~/.local/share/lemma/data/backups/` immediately
+   before it applies any pending database migration.
 2. Build or obtain a release for the machine's architecture and exact Python minor
    version, and verify its checksum.
 3. Stop the running service with `lemma stop`.
@@ -302,9 +391,10 @@ each version creates its own Git-tracked user-writable source worktree. Old
 `app-<version>` directories may be reviewed and removed after a successful upgrade,
 but never remove the shared `data/` directory as part of that cleanup.
 
-The project does not currently promise downgrade-safe database migrations. Keep a
-database backup before upgrading, and do not open a database written by a newer
-release with an older release unless that path has been tested.
+Database migrations are forward upgrades and are not promised to be downgrade-safe.
+Keep the automatic pre-migration backup until the new release has been verified, and
+do not open a database written by a newer release with an older release unless that
+path has been tested.
 
 ## Current limitations
 
@@ -319,5 +409,6 @@ release with an older release unless that path has been tested.
 - Offline means dependency resolution and installation make no network requests;
   it does not make the overall toolchain hermetic or guarantee byte-identical native
   wheels across different builders.
-- Release archives and local Debian packages are checksummed but not currently
-  cryptographically signed.
+- Minisign authentication is opt-in. Unsigned artifacts remain supported, and local
+  `.deb` signatures are detached files rather than distribution-native APT repository
+  signatures.

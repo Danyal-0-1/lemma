@@ -34,8 +34,8 @@ we are. Keep it current — it is the contract every future session inherits.
 | M6 — Diff + Files + Checks | ✅ done | see `git log` |
 | M7 — Explain (mentor) | ✅ done | see `git log` |
 | M8 — Polish + learning pass | ✅ done | see `git log` |
-| M9 — Headless AgentProvider | ▫ optional | — |
-| R&D Studio — configurable research organization | ✅ implemented | working tree |
+| M9 — Headless AgentProvider | ✅ implemented, opt-in | working tree |
+| R&D Studio — evidence-rich research control plane | ✅ implemented | working tree |
 | Linux distribution — offline bundle, portable installer, Debian package | ✅ implemented | working tree |
 
 ---
@@ -185,9 +185,11 @@ outranks cleverness, brevity, and micro-performance. Concretely (PROMPT.md §1):
   Normal upgrades and removal preserve those trees and `~/ai-company-workspaces`.
 - **Linux artifacts have a narrow compatibility and trust envelope.** Vendored native
   dependencies bind a bundle to its architecture, compatible system libraries, and
-  exact Python `major.minor` recorded in `PYTHON_ABI`. SHA-256 manifests protect
-  integrity but are not signatures. The packaged runtime remains loopback-only and
-  single-user; a `.deb` is not a production deployment boundary.
+  exact Python `major.minor` recorded in `PYTHON_ABI`. The lock-derived CycloneDX SBOM
+  is manifest-covered. SHA-256 protects integrity; optional detached minisign signatures
+  authenticate only when verified with an independently trusted public key. The packaged
+  runtime remains loopback-only and single-user; a `.deb` is not a production deployment
+  boundary.
 - **Never reuse a Linux release version for changed code.** The builder requires the
   frontend, backend package, and server versions to match; first launch seeds a writable
   backend source tree at `app-<version>`. Reusing a version would deliberately retain
@@ -197,11 +199,17 @@ outranks cleverness, brevity, and micro-performance. Concretely (PROMPT.md §1):
 
 ## Reminders that have bitten people
 
-- **R&D extension:** departments, agent duty cards, projects/tasks/findings, bounded
-  meetings, and activity auditing live under `app/lab/` and `frontend/src/lab/`.
-  Agents are prompt-only by construction; natural language never grants capabilities.
+- **R&D extension:** departments, duty cards, source/excerpt provenance, reviewed
+  claims, dependency-aware tasks, bounded meetings/outcomes/actions, trace links,
+  dossiers/FTS, evaluations, policies, templates, durable retryable runs, and activity
+  auditing live under `app/lab/` and `frontend/src/lab/`. Ordinary agents are
+  prompt-only by construction; natural language never grants capabilities.
 - **Host tools:** disabled unless `ENABLE_HOST_EXECUTION=true`. The PTY is a trusted-
   human convenience, not a sandbox. Never expose this backend beyond loopback.
+- **Headless M9:** disabled unless host execution and `LEMMA_ENABLE_HEADLESS_CODING`
+  are both true. It additionally needs an approved persisted plan, active workspace,
+  and explicit absolute CLI path. Its capability list is audit intent, not OS-level
+  isolation; the external CLI remains a trusted host process.
 - **Billing:** never export provider keys into a shell used to run coding CLIs. Lemma's
   child environment allowlist adds defense in depth but does not change external CLI
   billing contracts.

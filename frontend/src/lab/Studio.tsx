@@ -12,7 +12,10 @@ import IdeWorkspace from "./ide/IdeWorkspace";
 import { useLabStore } from "./store";
 import type { IdeView, ResearchView as ResearchViewId } from "./types";
 import HqView from "./views/HqView";
+import EvaluationsView from "./views/EvaluationsView";
+import KnowledgeView from "./views/KnowledgeView";
 import MeetingsView from "./views/MeetingsView";
+import OperationsView from "./views/OperationsView";
 import OrganizationView from "./views/OrganizationView";
 import ResearchView from "./views/ResearchView";
 import SecurityView from "./views/SecurityView";
@@ -66,7 +69,10 @@ export default function Studio() {
             {researchView === "hq" && <HqView />}
             {researchView === "organization" && <OrganizationView />}
             {researchView === "research" && <ResearchView />}
+            {researchView === "knowledge" && <KnowledgeView />}
+            {researchView === "evaluations" && <EvaluationsView />}
             {researchView === "meetings" && <MeetingsView />}
+            {researchView === "operations" && <OperationsView />}
             {researchView === "security" && <SecurityView />}
           </>
         )}

@@ -48,9 +48,7 @@ def _now() -> datetime:
     return datetime.now(UTC)
 
 
-def _require[RowT: SQLModel](
-    db: Session, model: type[RowT], row_id: str, label: str
-) -> RowT:
+def _require[RowT: SQLModel](db: Session, model: type[RowT], row_id: str, label: str) -> RowT:
     row = db.get(model, row_id)
     if row is None:
         raise LabNotFoundError(f"{label} not found")
@@ -205,9 +203,7 @@ def update_project(project_id: str, changes: dict[str, Any]) -> ResearchProject:
         return project
 
 
-def _validate_assignment(
-    db: Session, department_id: str | None, agent: LabAgent
-) -> None:
+def _validate_assignment(db: Session, department_id: str | None, agent: LabAgent) -> None:
     _ensure_department(db, department_id)
     if (
         department_id is not None
@@ -349,6 +345,80 @@ def get_meeting(meeting_id: str) -> ResearchMeeting:
 def get_run(run_id: str) -> LabRun:
     with get_session() as db:
         return _require(db, LabRun, run_id, "run")
+
+
+def list_project_runs(project_id: str, limit: int = 100) -> list[LabRun]:
+    with get_session() as db:
+        _ensure_project(db, project_id)
+        return list(
+            db.exec(
+                select(LabRun)
+                .where(LabRun.project_id == project_id)
+                .order_by(LabRun.started_at.desc())
+                .limit(limit)
+            )
+        )
+
+
+def cancel_run(run_id: str) -> LabRun:
+    """Persist cancellation and release the task/meeting for an explicit retry."""
+    with get_session() as db:
+        run = _require(db, LabRun, run_id, "run")
+        if run.status == "cancelled":
+            return run
+        if run.status != "running":
+            raise LabConflictError("only a running execution can be cancelled")
+        now = _now()
+        run.status = "cancelled"
+        run.error = None
+        run.completed_at = now
+        entity_id = run.id
+        if run.task_id is not None:
+            task = _require(db, ResearchTask, run.task_id, "task")
+            task.status = "cancelled"
+            task.updated_at = now
+            entity_id = task.id
+            db.add(task)
+        if run.meeting_id is not None:
+            meeting = _require(db, ResearchMeeting, run.meeting_id, "meeting")
+            meeting.status = "cancelled"
+            meeting.updated_at = now
+            entity_id = meeting.id
+            db.add(meeting)
+        db.add(run)
+        _record(db, "run.cancelled", run.kind, entity_id, run_id=run.id)
+        db.commit()
+        db.refresh(run)
+        return run
+
+
+def mark_retry(run_id: str, retry_of_run_id: str) -> LabRun:
+    """Link a newly claimed execution to its prior durable attempt."""
+    with get_session() as db:
+        run = _require(db, LabRun, run_id, "run")
+        prior = _require(db, LabRun, retry_of_run_id, "prior run")
+        if prior.status == "running":
+            raise LabConflictError("a running execution cannot be retried")
+        if (
+            run.kind != prior.kind
+            or run.task_id != prior.task_id
+            or run.meeting_id != prior.meeting_id
+        ):
+            raise LabValidationError("retry must target the same task or meeting")
+        run.retry_of_run_id = prior.id
+        run.attempt = prior.attempt + 1
+        db.add(run)
+        _record(
+            db,
+            "run.retried",
+            run.kind,
+            run.task_id or run.meeting_id or run.id,
+            run_id=run.id,
+            details={"retry_of_run_id": prior.id, "attempt": run.attempt},
+        )
+        db.commit()
+        db.refresh(run)
+        return run
 
 
 def recover_stale_runs() -> int:

@@ -9,6 +9,8 @@ PACKAGING_DIR="$SCRIPT_DIR/packaging/debian"
 OUTPUT_DIR="$SCRIPT_DIR/dist"
 BUNDLE_DIR=""
 KEEP_WORK=0
+VERIFY_KEY=""
+SIGNING_KEY=""
 
 usage() {
   cat <<'EOF'
@@ -22,6 +24,10 @@ Options:
   --bundle DIRECTORY  Built lemma-VERSION-linux-ARCH directory (required)
   --output DIRECTORY  Destination directory (default: linux_install/dist)
   --keep-work          Retain the temporary package tree for inspection
+  --minisign-public-key FILE
+                       Require a valid signed bundle manifest from this trusted key
+  --minisign-secret-key FILE
+                       Create a detached minisign signature for the finished .deb
   -h, --help           Show this help
 EOF
 }
@@ -47,6 +53,16 @@ while (($#)); do
       KEEP_WORK=1
       shift
       ;;
+    --minisign-public-key)
+      [[ $# -ge 2 && -n "$2" ]] || die "missing value for --minisign-public-key"
+      VERIFY_KEY="$2"
+      shift 2
+      ;;
+    --minisign-secret-key)
+      [[ $# -ge 2 && -n "$2" ]] || die "missing value for --minisign-secret-key"
+      SIGNING_KEY="$2"
+      shift 2
+      ;;
     -h|--help)
       usage
       exit 0
@@ -68,10 +84,24 @@ done
   die "Debian packages must be assembled on Linux"
 
 for command_name in awk chmod cp dirname dpkg-deb du find grep install ln \
-  md5sum mktemp mv rm sed sha256sum sort stat touch uname xargs; do
+  md5sum mktemp mv python3 realpath rm sed sha256sum sort stat touch uname xargs; do
   command -v "$command_name" >/dev/null 2>&1 || \
     die "required packaging command is unavailable: $command_name"
 done
+if [[ -n "$VERIFY_KEY" ]]; then
+  command -v minisign >/dev/null 2>&1 || \
+    die "minisign is required only when --minisign-public-key is used"
+  [[ -f "$VERIFY_KEY" && ! -L "$VERIFY_KEY" ]] || \
+    die "trusted minisign public key must be a regular, non-symbolic-link file"
+  VERIFY_KEY="$(realpath -e -- "$VERIFY_KEY")"
+fi
+if [[ -n "$SIGNING_KEY" ]]; then
+  command -v minisign >/dev/null 2>&1 || \
+    die "minisign is required only when --minisign-secret-key is used"
+  [[ -f "$SIGNING_KEY" && ! -L "$SIGNING_KEY" ]] || \
+    die "minisign secret key must be a regular, non-symbolic-link file"
+  SIGNING_KEY="$(realpath -e -- "$SIGNING_KEY")"
+fi
 
 [[ -d "$BUNDLE_DIR" ]] || die "bundle directory does not exist: $BUNDLE_DIR"
 BUNDLE_DIR="$(cd "$BUNDLE_DIR" && pwd -P)"
@@ -89,7 +119,10 @@ required_bundle_files=(
   bin/lemma-doctor
   libexec/backend_runner.py
   libexec/frontend_server.py
+  verify-release.sh
+  share/doc/lemma-linux/SBOM.cdx.json
   share/doc/lemma-linux/THIRD_PARTY_NOTICES.md
+  share/lemma/app/linux_install/sbom.py
   share/lemma/env.default
   share/lemma/web/index.html
   share/applications/io.lemma.Lemma.desktop.in
@@ -108,7 +141,7 @@ for required_directory in share/doc/lemma-linux/third-party/javascript \
     die "bundle is missing a required directory: $required_directory"
 done
 for executable_path in install.sh uninstall.sh bin/lemma bin/lemma-server \
-  bin/lemma-doctor; do
+  bin/lemma-doctor verify-release.sh; do
   [[ -x "$BUNDLE_DIR/$executable_path" ]] || \
     die "bundle launcher is not executable: $executable_path"
 done
@@ -142,6 +175,23 @@ validate_relative_path() {
 }
 
 printf '[1/5] Verifying the release bundle...\n'
+manifest_signature_count=0
+if [[ -e "$BUNDLE_DIR/manifest.sha256.minisig" || \
+      -L "$BUNDLE_DIR/manifest.sha256.minisig" ]]; then
+  [[ -f "$BUNDLE_DIR/manifest.sha256.minisig" && \
+     ! -L "$BUNDLE_DIR/manifest.sha256.minisig" ]] || \
+    die "bundle manifest signature is not a regular file"
+  manifest_signature_count=1
+fi
+if [[ -n "$VERIFY_KEY" ]]; then
+  [[ "$manifest_signature_count" -eq 1 ]] || \
+    die "--minisign-public-key requires manifest.sha256.minisig"
+  minisign -V -q -p "$VERIFY_KEY" -m "$BUNDLE_DIR/manifest.sha256" \
+    -x "$BUNDLE_DIR/manifest.sha256.minisig" || \
+    die "bundle manifest signature verification failed"
+elif [[ "$manifest_signature_count" -eq 1 ]]; then
+  printf 'build-deb.sh: warning: bundle signature was not authenticated; use --minisign-public-key to require it\n' >&2
+fi
 declare -A manifest_paths=()
 manifest_count=0
 while IFS= read -r checksum_line || [[ -n "$checksum_line" ]]; do
@@ -150,8 +200,9 @@ while IFS= read -r checksum_line || [[ -n "$checksum_line" ]]; do
   relative_path="${checksum_line:68}"
   validate_relative_path "$relative_path" || \
     die "manifest.sha256 contains an unsafe path: $relative_path"
-  [[ "$relative_path" != "manifest.sha256" ]] || \
-    die "manifest.sha256 must not list itself"
+  [[ "$relative_path" != "manifest.sha256" && \
+     "$relative_path" != "manifest.sha256.minisig" ]] || \
+    die "the detached manifest and its signature must not list themselves"
   [[ -z "${manifest_paths[$relative_path]+present}" ]] || \
     die "manifest.sha256 contains a duplicate path: $relative_path"
   [[ -f "$BUNDLE_DIR/$relative_path" && \
@@ -169,12 +220,13 @@ while IFS= read -r -d '' relative_path; do
     die "bundle contains an unsafe file name"
   actual_file_count=$((actual_file_count + 1))
   if [[ "$relative_path" != "manifest.sha256" && \
+        "$relative_path" != "manifest.sha256.minisig" && \
         -z "${manifest_paths[$relative_path]+present}" ]]; then
     die "bundle file is not covered by manifest.sha256: $relative_path"
   fi
 done < <(cd "$BUNDLE_DIR" && \
   find . -mindepth 1 -type f -print0 | LC_ALL=C sort -z)
-[[ "$actual_file_count" -eq $((manifest_count + 1)) ]] || \
+[[ "$actual_file_count" -eq $((manifest_count + 1 + manifest_signature_count)) ]] || \
   die "manifest.sha256 does not describe the complete bundle"
 
 if ! (cd "$BUNDLE_DIR" && \
@@ -187,6 +239,9 @@ mapfile -t version_lines < "$BUNDLE_DIR/VERSION"
 version="${version_lines[0]}"
 [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9]+)*$ ]] || \
   die "unsupported bundle version: $version"
+python3 -I -B "$BUNDLE_DIR/share/lemma/app/linux_install/sbom.py" validate \
+  "$BUNDLE_DIR/share/doc/lemma-linux/SBOM.cdx.json" \
+  --application-version "$version" || die "bundle SBOM validation failed"
 
 mapfile -t python_lines < "$BUNDLE_DIR/PYTHON_ABI"
 [[ "${#python_lines[@]}" -eq 1 ]] || \
@@ -267,10 +322,14 @@ esac
 deb_name="lemma_${debian_version}_${deb_arch}.deb"
 deb_path="$OUTPUT_DIR/$deb_name"
 checksum_path="$deb_path.sha256"
+signature_path="$deb_path.minisig"
 [[ ! -e "$deb_path" && ! -L "$deb_path" ]] || \
   die "output already exists; remove it explicitly before rebuilding: $deb_path"
 [[ ! -e "$checksum_path" && ! -L "$checksum_path" ]] || \
   die "output already exists; remove it explicitly before rebuilding: $checksum_path"
+if [[ -e "$signature_path" || -L "$signature_path" ]]; then
+  die "output already exists; remove it explicitly before rebuilding: $signature_path"
+fi
 
 # Stage beside the destination so default builds can use filesystem reflinks for
 # the large vendored payload and publishing the completed archives is atomic.
@@ -392,8 +451,18 @@ printf '[5/5] Writing the package checksum...\n'
   cd "$work_dir"
   sha256sum "$deb_name" > "$deb_name.sha256"
 )
+if [[ -n "$SIGNING_KEY" ]]; then
+  minisign -S -s "$SIGNING_KEY" -m "$work_deb" \
+    -x "$work_dir/$deb_name.minisig" \
+    -t "Lemma $version $deb_arch Debian package"
+  chmod 644 "$work_dir/$deb_name.minisig"
+fi
 mv -- "$work_deb" "$deb_path"
 mv -- "$work_dir/$deb_name.sha256" "$checksum_path"
+if [[ -n "$SIGNING_KEY" ]]; then
+  mv -- "$work_dir/$deb_name.minisig" "$signature_path"
+fi
 
 printf '\nDebian package ready:\n  %s\n  %s\n' "$deb_path" "$checksum_path"
+[[ -z "$SIGNING_KEY" ]] || printf '  %s\n' "$signature_path"
 printf 'Install or upgrade with: sudo apt install %q\n' "$deb_path"

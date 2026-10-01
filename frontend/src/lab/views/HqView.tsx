@@ -22,6 +22,13 @@ export default function HqView() {
   const activeAgents = snapshot.agents.filter((agent) => agent.status === "active");
   const activeTasks = snapshot.tasks.filter((task) => ["queued", "running"].includes(task.status));
   const completeTasks = snapshot.tasks.filter((task) => task.status === "completed");
+  const onboarding = [
+    { label: "Define one agent duty card", done: snapshot.agents.length > 0, view: "organization" as const },
+    { label: "Open a research project", done: snapshot.projects.length > 0, view: "research" as const },
+    { label: "Run one bounded task", done: snapshot.runs.length > 0, view: "research" as const },
+    { label: "Produce a finding ready for evidence review", done: snapshot.findings.length > 0, view: "knowledge" as const },
+  ];
+  const onboardingComplete = onboarding.every((item) => item.done);
 
   return (
     <main className="lab-view lab-hq-view">
@@ -42,6 +49,13 @@ export default function HqView() {
       </header>
 
       <UnverifiedNotice compact />
+
+      {!onboardingComplete && (
+        <section className="lab-panel-card lab-onboarding" aria-label="Getting started">
+          <header className="lab-card-header"><div><h2>First research loop</h2><p>Move from team design to a durable finding, then continue into human evidence review.</p></div><Badge>{onboarding.filter((item) => item.done).length}/{onboarding.length}</Badge></header>
+          <ol>{onboarding.map((item) => <li key={item.label} className={item.done ? "is-done" : ""}><Icon name={item.done ? "check" : "chevronRight"} size={14} /><button type="button" onClick={() => setView(item.view)}>{item.label}</button></li>)}</ol>
+        </section>
+      )}
 
       <section className="lab-metrics" aria-label="Lab overview">
         <article><span>Agents</span><strong>{snapshot.agents.length}</strong><small>{activeAgents.length} active</small></article>

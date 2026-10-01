@@ -100,6 +100,7 @@ interface AppState {
   phase: Phase;
   mock: boolean;
   hostExecutionEnabled: boolean;
+  headlessCodingEnabled: boolean;
   turns: Turn[];
   cost: Cost;
   // The session currently in view — running OR restored. Used to signal approve/cancel
@@ -126,6 +127,7 @@ interface AppState {
   setStatus: (status: ConnectionStatus) => void;
   setMock: (mock: boolean) => void;
   setHostExecutionEnabled: (enabled: boolean) => void;
+  setHeadlessCodingEnabled: (enabled: boolean) => void;
   setSessionId: (id: string | null) => void;
   setDiffCounts: (counts: { additions: number; deletions: number } | null) => void;
   setMentorContext: (context: { label: string; content: string } | null) => void;
@@ -148,6 +150,7 @@ export const useAppStore = create<AppState>((set) => ({
   phase: "idle",
   mock: true,
   hostExecutionEnabled: false,
+  headlessCodingEnabled: false,
   turns: [],
   cost: EMPTY_COST,
   sessionId: null,
@@ -163,6 +166,7 @@ export const useAppStore = create<AppState>((set) => ({
   setStatus: (status) => set({ status }),
   setMock: (mock) => set({ mock }),
   setHostExecutionEnabled: (hostExecutionEnabled) => set({ hostExecutionEnabled }),
+  setHeadlessCodingEnabled: (headlessCodingEnabled) => set({ headlessCodingEnabled }),
   setSessionId: (id) => set({ sessionId: id }),
   setDiffCounts: (counts) => set({ diffCounts: counts }),
   setMentorContext: (context) => set({ mentorContext: context }),

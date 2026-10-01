@@ -7,15 +7,22 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd -P)"
 OUTPUT_DIR="$SCRIPT_DIR/dist"
 KEEP_WORK=0
+SIGNING_KEY=""
 
 usage() {
   cat <<'EOF'
 Usage: ./linux_install/build.sh [--output DIRECTORY] [--keep-work]
+                                [--minisign-secret-key FILE]
 
 Builds Lemma without network access. npm and uv must already have every locked
 dependency in their local caches. Run this on the oldest Linux/Python combination
 you intend to support; native Python wheels are bundled for that architecture and
 exact Python minor version.
+
+When --minisign-secret-key is supplied, minisign creates detached signatures for
+the bundle manifest and portable archive. Signing is optional and never contacts
+the network; distribute the corresponding public key through a separate trusted
+channel.
 EOF
 }
 
@@ -30,6 +37,14 @@ while (($#)); do
       KEEP_WORK=1
       shift
       ;;
+    --minisign-secret-key)
+      [[ $# -ge 2 && -n "$2" ]] || {
+        printf 'Missing value for --minisign-secret-key\n' >&2
+        exit 2
+      }
+      SIGNING_KEY="$2"
+      shift 2
+      ;;
     -h|--help)
       usage
       exit 0
@@ -41,6 +56,18 @@ while (($#)); do
       ;;
   esac
 done
+
+if [[ -n "$SIGNING_KEY" ]]; then
+  [[ -f "$SIGNING_KEY" && ! -L "$SIGNING_KEY" ]] || {
+    printf 'Minisign secret key must be a regular, non-symbolic-link file: %s\n' \
+      "$SIGNING_KEY" >&2
+    exit 1
+  }
+  command -v minisign >/dev/null 2>&1 || {
+    printf 'minisign is required only when --minisign-secret-key is used.\n' >&2
+    exit 1
+  }
+fi
 
 [[ "$(uname -s)" == "Linux" ]] || {
   printf 'build.sh creates native Linux artifacts and must run on Linux.\n' >&2
@@ -124,7 +151,9 @@ bundle_name="lemma-$version-linux-$release_arch"
 final_dir="$OUTPUT_DIR/$bundle_name"
 archive="$OUTPUT_DIR/$bundle_name.tar.gz"
 archive_checksum="$archive.sha256"
-for output_path in "$final_dir" "$archive" "$archive_checksum"; do
+archive_signature="$archive.minisig"
+output_paths=("$final_dir" "$archive" "$archive_checksum" "$archive_signature")
+for output_path in "${output_paths[@]}"; do
   [[ ! -e "$output_path" ]] || {
     printf 'Output already exists; remove it explicitly before rebuilding: %s\n' \
       "$output_path" >&2
@@ -187,14 +216,15 @@ for file_name in README.md SECURITY.md ARCHITECTURE.md LEARNING_PATH.md PROMPT.m
   CLAUDE.md Makefile LICENSE .gitignore; do
   cp -- "$REPO_ROOT/$file_name" "$bundle/share/lemma/app/$file_name"
 done
-cp -a -- "$REPO_ROOT/backend/app" "$bundle/share/lemma/app/backend/"
+cp -a -- "$REPO_ROOT/backend/app" "$REPO_ROOT/backend/migrations" \
+  "$bundle/share/lemma/app/backend/"
 # The source worktree is intentionally included for learning and local inspection,
 # but interpreter caches are machine-generated and can leak host-specific paths.
-find "$bundle/share/lemma/app/backend/app" -type f \( -name '*.pyc' -o -name '*.pyo' \) \
+find "$bundle/share/lemma/app/backend" -type f \( -name '*.pyc' -o -name '*.pyo' \) \
   -delete
-find "$bundle/share/lemma/app/backend/app" -depth -type d -name '__pycache__' \
+find "$bundle/share/lemma/app/backend" -depth -type d -name '__pycache__' \
   -empty -delete
-for file_name in config.toml pyproject.toml uv.lock .env.example; do
+for file_name in alembic.ini config.toml pyproject.toml uv.lock .env.example; do
   cp -- "$REPO_ROOT/backend/$file_name" "$bundle/share/lemma/app/backend/$file_name"
 done
 cp -a -- "$REPO_ROOT/frontend/src" "$REPO_ROOT/frontend/public" \
@@ -210,6 +240,7 @@ cp -- "$REPO_ROOT/scripts/dev.sh" "$bundle/share/lemma/app/scripts/dev.sh"
 install -d -m 755 -- "$bundle/share/lemma/app/linux_install"
 cp -- "$SCRIPT_DIR/README.md" "$SCRIPT_DIR/build.sh" "$SCRIPT_DIR/build-deb.sh" \
   "$SCRIPT_DIR/install.sh" "$SCRIPT_DIR/uninstall.sh" \
+  "$SCRIPT_DIR/verify-release.sh" "$SCRIPT_DIR/sbom.py" \
   "$bundle/share/lemma/app/linux_install/"
 cp -a -- "$SCRIPT_DIR/assets" "$SCRIPT_DIR/runtime" "$SCRIPT_DIR/packaging" \
   "$bundle/share/lemma/app/linux_install/"
@@ -239,6 +270,7 @@ install -m 644 -- "$SCRIPT_DIR/README.md" "$bundle/share/doc/lemma-linux/README.
 install -m 644 -- "$REPO_ROOT/LICENSE" "$bundle/share/doc/lemma-linux/LICENSE"
 install -m 755 -- "$SCRIPT_DIR/install.sh" "$bundle/install.sh"
 install -m 755 -- "$SCRIPT_DIR/uninstall.sh" "$bundle/uninstall.sh"
+install -m 755 -- "$SCRIPT_DIR/verify-release.sh" "$bundle/verify-release.sh"
 
 # The browser bundle and private Python library contain third-party code. Python
 # wheels retain their dist-info license directories; npm packages do not ship beside
@@ -331,6 +363,21 @@ for metadata_path in Path(sys.argv[1]).glob("*.dist-info/METADATA"):
 for name, version, license_name in sorted(packages, key=lambda item: (item[0].casefold(), item[1])):
     print(f"| {name} | {version} | {license_name} |")
 PY
+cat >> "$notices" <<'EOF'
+
+## Machine-readable inventory
+
+`SBOM.cdx.json` is the CycloneDX 1.5 inventory generated from the exact npm lock
+and the production Python requirements exported from `uv.lock`. The SBOM is part
+of `manifest.sha256`, so a verified manifest also verifies this inventory.
+EOF
+
+sbom="$bundle/share/doc/lemma-linux/SBOM.cdx.json"
+python3 -I -B "$SCRIPT_DIR/sbom.py" create \
+  --package-lock "$frontend_build/package-lock.json" \
+  --requirements "$requirements" \
+  --application-version "$version" \
+  --output "$sbom"
 
 printf '%s\n' "$version" > "$bundle/VERSION"
 printf '%s\n' "$python_abi" > "$bundle/PYTHON_ABI"
@@ -349,6 +396,7 @@ node=$(node --version)
 uv=$(uv --version)
 source_date_epoch=$epoch
 offline_build=true
+minisign_signed=$([[ -n "$SIGNING_KEY" ]] && printf true || printf false)
 EOF
 
 # Secrets and mutable state must never enter an installation artifact. Vendored
@@ -433,6 +481,12 @@ printf '[5/6] Writing and verifying the release checksum manifest...\n'
     xargs -0 sha256sum > manifest.sha256
   sha256sum --check --strict --quiet manifest.sha256
 )
+if [[ -n "$SIGNING_KEY" ]]; then
+  minisign -S -s "$SIGNING_KEY" -m "$bundle/manifest.sha256" \
+    -x "$bundle/manifest.sha256.minisig" \
+    -t "Lemma $version $release_arch bundle manifest"
+  chmod 644 "$bundle/manifest.sha256.minisig"
+fi
 
 printf '[6/6] Creating the portable directory and archive...\n'
 archive_temp="$work_dir/$bundle_name.tar.gz"
@@ -441,13 +495,25 @@ tar --sort=name --mtime="@$epoch" --owner=0 --group=0 --numeric-owner \
 archive_hash="$(sha256sum "$archive_temp" | cut -d ' ' -f 1)"
 printf '%s  %s\n' "$archive_hash" "$(basename "$archive")" \
   > "$work_dir/$bundle_name.tar.gz.sha256"
+if [[ -n "$SIGNING_KEY" ]]; then
+  minisign -S -s "$SIGNING_KEY" -m "$archive_temp" \
+    -x "$work_dir/$bundle_name.tar.gz.minisig" \
+    -t "Lemma $version $release_arch portable archive"
+  chmod 644 "$work_dir/$bundle_name.tar.gz.minisig"
+fi
 
 # Publish only after every artifact is complete, so a failed compression cannot leave
 # an apparently usable release directory in the requested output location.
 mv -- "$bundle" "$final_dir"
 mv -- "$archive_temp" "$archive"
 mv -- "$work_dir/$bundle_name.tar.gz.sha256" "$archive_checksum"
+if [[ -n "$SIGNING_KEY" ]]; then
+  mv -- "$work_dir/$bundle_name.tar.gz.minisig" "$archive_signature"
+fi
 
 printf '\nLinux release ready:\n  %s\n  %s\n  %s\n' \
   "$final_dir" "$archive" "$archive_checksum"
+if [[ -n "$SIGNING_KEY" ]]; then
+  printf '  %s\n  %s\n' "$final_dir/manifest.sha256.minisig" "$archive_signature"
+fi
 printf 'Install with: %s/install.sh --bundle %q\n' "$final_dir" "$final_dir"

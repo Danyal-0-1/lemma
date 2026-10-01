@@ -85,7 +85,9 @@ if [[ ! -d "$USER_APP" ]]; then
   fi
 fi
 
-[[ -d "$USER_APP/backend/app" ]] || die "per-user application tree is incomplete"
+[[ -d "$USER_APP/backend/app" && -d "$USER_APP/backend/migrations/versions" && \
+   -r "$USER_APP/backend/alembic.ini" ]] || \
+  die "per-user application tree is incomplete"
 if [[ ! -L "$USER_APP/backend/data" ]]; then
   die "backend data path is not the protected XDG storage link"
 fi

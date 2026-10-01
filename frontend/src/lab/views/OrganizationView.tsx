@@ -3,17 +3,14 @@
 import { useState, type FormEvent } from "react";
 
 import { createLabEntity, updateLabEntity } from "../../lib/api";
+import { useAsyncAction } from "../../lib/asyncAction";
 import { Icon } from "../components/Icons";
 import { AgentAvatar, Badge, Button, EmptyState, Field, Modal, StatusBadge } from "../components/UI";
 import { useLabStore } from "../store";
-import type { Agent, DepartmentKind } from "../types";
+import type { Agent, Department, DepartmentKind } from "../types";
 
 function lines(value: string): string[] {
   return value.split(/\r?\n/).map((item) => item.trim()).filter(Boolean);
-}
-
-function message(error: unknown): string {
-  return error instanceof Error ? error.message : "The change could not be saved.";
 }
 
 function GroupForm({ onClose }: { onClose: () => void }) {
@@ -21,28 +18,27 @@ function GroupForm({ onClose }: { onClose: () => void }) {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [kind, setKind] = useState<DepartmentKind>("department");
-  const [error, setError] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
+  const action = useAsyncAction({ fallbackError: "Could not create the group." });
 
   async function submit(event: FormEvent) {
     event.preventDefault();
-    setSaving(true); setError(null);
-    try {
+    const result = await action.run(async () => {
       await createLabEntity("departments", { name, description, kind });
-      await refresh(); onClose();
-    } catch (caught) { setError(message(caught)); } finally { setSaving(false); }
+      await refresh();
+    });
+    if (result.ok) onClose();
   }
 
   return (
-    <form className="lab-form" onSubmit={(event) => void submit(event)}>
+    <form className="lab-form" aria-busy={action.pending} onSubmit={(event) => void submit(event)}>
       <div className="lab-segmented">
         <button type="button" className={kind === "department" ? "is-active" : ""} onClick={() => setKind("department")}>Department</button>
         <button type="button" className={kind === "mission_team" ? "is-active" : ""} onClick={() => setKind("mission_team")}>Mission team</button>
       </div>
       <Field label="Name"><input required maxLength={160} value={name} onChange={(e) => setName(e.target.value)} placeholder="Applied Intelligence" autoFocus /></Field>
       <Field label="Mandate" hint="What this group owns and why it exists."><textarea maxLength={4000} rows={5} value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Explore practical applications, surface risks, and turn evidence into decisions." /></Field>
-      {error && <p className="lab-inline-error">{error}</p>}
-      <div className="lab-form-actions"><Button onClick={onClose}>Cancel</Button><Button type="submit" variant="primary" disabled={saving || !name.trim()}>{saving ? "Creating…" : "Create group"}</Button></div>
+      {action.error && <p className="lab-inline-error" role="alert">{action.error}</p>}
+      <div className="lab-form-actions"><Button onClick={onClose} disabled={action.pending}>Cancel</Button><Button type="submit" variant="primary" disabled={action.pending || !name.trim()}>{action.pending ? "Creating…" : "Create group"}</Button></div>
     </form>
   );
 }
@@ -59,23 +55,23 @@ function AgentForm({ onClose }: { onClose: () => void }) {
   const [focus, setFocus] = useState("");
   const [priorities, setPriorities] = useState("");
   const [scope, setScope] = useState("department");
-  const [error, setError] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
+  const action = useAsyncAction({ fallbackError: "Could not create the agent." });
 
   async function submit(event: FormEvent) {
-    event.preventDefault(); setSaving(true); setError(null);
-    try {
+    event.preventDefault();
+    const result = await action.run(async () => {
       await createLabEntity<Agent>("agents", {
         ...(departmentId ? { department_id: departmentId } : {}), name, role, mission,
         duties: lines(duties), focus: lines(focus), priorities: lines(priorities),
         communication_scope: scope,
       });
-      await refresh(); onClose();
-    } catch (caught) { setError(message(caught)); } finally { setSaving(false); }
+      await refresh();
+    });
+    if (result.ok) onClose();
   }
 
   return (
-    <form className="lab-form lab-form-grid" onSubmit={(event) => void submit(event)}>
+    <form className="lab-form lab-form-grid" aria-busy={action.pending} onSubmit={(event) => void submit(event)}>
       <Field label="Agent name"><input required maxLength={160} value={name} onChange={(e) => setName(e.target.value)} placeholder="Mira" autoFocus /></Field>
       <Field label="Role"><input required maxLength={160} value={role} onChange={(e) => setRole(e.target.value)} placeholder="Evidence Analyst" /></Field>
       <Field label="Home group"><select value={departmentId} onChange={(e) => setDepartmentId(e.target.value)}><option value="">Independent</option>{departments.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></Field>
@@ -84,8 +80,8 @@ function AgentForm({ onClose }: { onClose: () => void }) {
       <Field label="Core duties" hint="One duty per line"><textarea rows={6} value={duties} onChange={(e) => setDuties(e.target.value)} placeholder={"Compare competing claims\nIdentify evidence gaps\nDraft a decision memo"} /></Field>
       <Field label="Must consider" hint="One focus area per line"><textarea rows={6} value={focus} onChange={(e) => setFocus(e.target.value)} placeholder={"Source quality\nCounter-evidence\nImplementation constraints"} /></Field>
       <div className="lab-field-span-2"><Field label="Priority order" hint="One priority per line; order matters."><textarea rows={4} value={priorities} onChange={(e) => setPriorities(e.target.value)} placeholder={"Accuracy before speed\nState uncertainty\nMake recommendations actionable"} /></Field></div>
-      {error && <p className="lab-inline-error lab-field-span-2">{error}</p>}
-      <div className="lab-form-actions lab-field-span-2"><Button onClick={onClose}>Cancel</Button><Button type="submit" variant="primary" disabled={saving || !name.trim() || !role.trim() || !mission.trim()}>{saving ? "Creating…" : "Create agent"}</Button></div>
+      {action.error && <p className="lab-inline-error lab-field-span-2" role="alert">{action.error}</p>}
+      <div className="lab-form-actions lab-field-span-2"><Button onClick={onClose} disabled={action.pending}>Cancel</Button><Button type="submit" variant="primary" disabled={action.pending || !name.trim() || !role.trim() || !mission.trim()}>{action.pending ? "Creating…" : "Create agent"}</Button></div>
     </form>
   );
 }
@@ -99,18 +95,19 @@ function AgentInspector({ agent }: { agent: Agent }) {
   const [priorities, setPriorities] = useState(agent.priorities.join("\n"));
   const [scope, setScope] = useState(agent.communication_scope);
   const [status, setStatus] = useState(agent.status);
-  const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
+  const action = useAsyncAction({ fallbackError: "Could not save the duty card." });
 
   async function save() {
-    setError(null); setSaved(false);
-    try {
+    setSaved(false);
+    const result = await action.run(async () => {
       await updateLabEntity("agents", agent.id, {
         mission, duties: lines(duties), focus: lines(focus), priorities: lines(priorities),
         communication_scope: scope, status,
       });
-      await refresh(); setSaved(true);
-    } catch (caught) { setError(message(caught)); }
+      await refresh();
+    });
+    if (result.ok) setSaved(true);
   }
 
   return (
@@ -126,19 +123,42 @@ function AgentInspector({ agent }: { agent: Agent }) {
         <Field label="Communication policy"><select value={scope} onChange={(e) => setScope(e.target.value)}><option value="isolated">Isolated</option><option value="department">Same group only</option><option value="organization">Organization-wide</option></select></Field>
         <Field label="Availability"><select value={status} onChange={(e) => setStatus(e.target.value)}><option value="active">Active</option><option value="paused">Paused</option><option value="archived">Archived</option></select></Field>
         <div className="lab-model-row"><span>Model</span><code>{agent.model}</code></div>
-        {error && <p className="lab-inline-error">{error}</p>}{saved && <p className="lab-inline-success">Duty card saved.</p>}
+        {action.error && <p className="lab-inline-error" role="alert">{action.error}</p>}{saved && <p className="lab-inline-success" role="status">Duty card saved.</p>}
       </div>
-      <footer className="lab-inspector-footer"><Button variant="primary" onClick={() => void save()}>Save duty card</Button></footer>
+      <footer className="lab-inspector-footer"><Button variant="primary" onClick={() => void save()} disabled={action.pending}>{action.pending ? "Saving…" : "Save duty card"}</Button></footer>
     </aside>
   );
+}
+
+function GroupInspector({ group }: { group: Department }) {
+  const refresh = useLabStore((state) => state.refresh);
+  const members = useLabStore((state) => state.snapshot.agents).filter(
+    (agent) => agent.department_id === group.id,
+  );
+  const [name, setName] = useState(group.name);
+  const [description, setDescription] = useState(group.description);
+  const [status, setStatus] = useState(group.status);
+  const action = useAsyncAction({ fallbackError: "Could not save the group." });
+  async function save() {
+    const result = await action.run(async () => {
+      await updateLabEntity("departments", group.id, { name, description, status });
+      await refresh();
+    });
+    return result.ok;
+  }
+  return <aside className="lab-inspector"><header className="lab-inspector-header"><span>GROUP MANDATE</span><StatusBadge status={status} /></header><div className="lab-inspector-scroll"><div className="lab-agent-identity"><span className="lab-card-icon"><Icon name={group.kind === "mission_team" ? "users" : "organization"} size={20} /></span><div><h2>{group.name}</h2><p>{group.kind.replaceAll("_", " ")}</p><small>{members.length} members</small></div></div><Field label="Name"><input value={name} onChange={(event) => setName(event.target.value)} /></Field><Field label="Mandate"><textarea rows={7} value={description} onChange={(event) => setDescription(event.target.value)} /></Field><Field label="Lifecycle"><select value={status} onChange={(event) => setStatus(event.target.value)}><option value="active">Active</option><option value="archived">Archived</option></select></Field>{action.error && <p className="lab-inline-error">{action.error}</p>}</div><footer className="lab-inspector-footer"><Button variant="primary" onClick={() => void save()} disabled={!name.trim() || action.pending}>Save group</Button></footer></aside>;
 }
 
 export default function OrganizationView() {
   const snapshot = useLabStore((state) => state.snapshot);
   const selectedAgentId = useLabStore((state) => state.selectedAgentId);
+  const selectedDepartmentId = useLabStore((state) => state.selectedDepartmentId);
   const selectAgent = useLabStore((state) => state.selectAgent);
   const [modal, setModal] = useState<"group" | "agent" | null>(null);
   const selected = snapshot.agents.find((agent) => agent.id === selectedAgentId) ?? null;
+  const selectedGroup = !selected
+    ? snapshot.departments.find((group) => group.id === selectedDepartmentId) ?? null
+    : null;
 
   return (
     <div className="lab-view-with-inspector">
@@ -156,7 +176,7 @@ export default function OrganizationView() {
           </section>
         )}
       </main>
-      {selected ? <AgentInspector key={selected.id} agent={selected} /> : <aside className="lab-inspector lab-inspector-placeholder"><Icon name="agent" size={28} /><h2>Select an agent</h2><p>Its duty card and communication policy will open here.</p></aside>}
+      {selected ? <AgentInspector key={selected.id} agent={selected} /> : selectedGroup ? <GroupInspector key={selectedGroup.id} group={selectedGroup} /> : <aside className="lab-inspector lab-inspector-placeholder"><Icon name="agent" size={28} /><h2>Select a group or agent</h2><p>Its mandate, duty card, and communication policy will open here.</p></aside>}
       {modal === "group" && <Modal title="Create a group" description="A permanent department or a focused cross-functional mission team." onClose={() => setModal(null)}><GroupForm onClose={() => setModal(null)} /></Modal>}
       {modal === "agent" && <Modal title="Create a research agent" description="Structure the duty. Permissions remain code-enforced and separate." onClose={() => setModal(null)}><AgentForm onClose={() => setModal(null)} /></Modal>}
     </div>

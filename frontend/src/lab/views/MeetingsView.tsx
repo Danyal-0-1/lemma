@@ -2,7 +2,15 @@
 
 import { useState, type FormEvent } from "react";
 
-import { createLabEntity, runLabMeeting } from "../../lib/api";
+import {
+  cancelLabRun,
+  createActionItem,
+  createLabEntity,
+  recordMeetingOutcome,
+  runLabMeeting,
+  updateLabEntity,
+} from "../../lib/api";
+import { useAsyncAction } from "../../lib/asyncAction";
 import { Icon } from "../components/Icons";
 import {
   AgentAvatar,
@@ -190,15 +198,63 @@ function MeetingForm({ onClose }: { onClose: () => void }) {
   );
 }
 
+function MeetingEditForm({ meeting, onClose }: { meeting: Meeting; onClose: () => void }) {
+  const snapshot = useLabStore((state) => state.snapshot);
+  const refresh = useLabStore((state) => state.refresh);
+  const agents = snapshot.agents.filter(
+    (agent) => agent.status === "active"
+      || meeting.participant_ids.includes(agent.id)
+      || meeting.facilitator_agent_id === agent.id,
+  );
+  const departments = snapshot.departments.filter((group) => group.status === "active");
+  const [title, setTitle] = useState(meeting.title);
+  const [agenda, setAgenda] = useState(meeting.agenda);
+  const [status, setStatus] = useState(meeting.status);
+  const [departmentId, setDepartmentId] = useState(meeting.department_id ?? "");
+  const [facilitatorId, setFacilitatorId] = useState(meeting.facilitator_agent_id ?? "");
+  const [participants, setParticipants] = useState(meeting.participant_ids);
+  const action = useAsyncAction({ fallbackError: "Could not update the meeting room." });
+  function toggle(id: string) {
+    setParticipants((current) => (
+      current.includes(id)
+        ? current.filter((item) => item !== id)
+        : current.length < MAX_PARTICIPANTS ? [...current, id] : current
+    ));
+  }
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    const result = await action.run(async () => {
+      await updateLabEntity("meetings", meeting.id, {
+        title,
+        agenda,
+        status,
+        department_id: departmentId || null,
+        facilitator_agent_id: facilitatorId,
+        participant_ids: participants,
+      });
+      await refresh();
+    });
+    if (result.ok) onClose();
+  }
+  return <form className="lab-form" onSubmit={(event) => void submit(event)}><Field label="Meeting name"><input required value={title} onChange={(event) => setTitle(event.target.value)} /></Field><Field label="Agenda"><textarea required rows={6} value={agenda} onChange={(event) => setAgenda(event.target.value)} /></Field><div className="lab-form-grid"><Field label="Room home"><select value={departmentId} onChange={(event) => setDepartmentId(event.target.value)}><option value="">Cross-organization</option>{departments.map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}</select></Field><Field label="Facilitator"><select required value={facilitatorId} onChange={(event) => setFacilitatorId(event.target.value)}><option value="">Select facilitator</option>{agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name} — {agent.role}{agent.status !== "active" ? " (unavailable)" : ""}</option>)}</select></Field></div><fieldset className="lab-roster-field"><legend>Participants <span>{participants.length}/{MAX_PARTICIPANTS}</span></legend><div className="lab-roster-grid">{agents.map((agent) => <label key={agent.id} className={participants.includes(agent.id) ? "is-selected" : ""}><input type="checkbox" checked={participants.includes(agent.id)} disabled={!participants.includes(agent.id) && (participants.length >= MAX_PARTICIPANTS || agent.status !== "active")} onChange={() => toggle(agent.id)} /><AgentAvatar name={agent.name} size="sm" /><span><strong>{agent.name}</strong><small>{agent.role}{agent.status !== "active" ? " · unavailable" : ""}</small></span></label>)}</div></fieldset><Field label="Lifecycle"><select value={status} onChange={(event) => setStatus(event.target.value)}><option value="planned">Planned</option><option value="completed">Completed</option><option value="failed">Failed</option><option value="cancelled">Cancelled</option></select></Field>{action.error && <p className="lab-inline-error">{action.error}</p>}<div className="lab-form-actions"><Button onClick={onClose}>Cancel</Button><Button type="submit" variant="primary" disabled={!title.trim() || !agenda.trim() || !facilitatorId || participants.length === 0}>Save room</Button></div></form>;
+}
+
 export default function MeetingsView() {
   const snapshot = useLabStore((state) => state.snapshot);
   const selectedId = useLabStore((state) => state.selectedMeetingId);
   const liveRuns = useLabStore((state) => state.liveRuns);
   const registerRun = useLabStore((state) => state.registerRun);
   const [showCreate, setShowCreate] = useState(false);
+  const [showEdit, setShowEdit] = useState(false);
   const [instructions, setInstructions] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
+  const [outcomeSummary, setOutcomeSummary] = useState("");
+  const [decisions, setDecisions] = useState("");
+  const [disagreements, setDisagreements] = useState("");
+  const [actionTitle, setActionTitle] = useState("");
+  const [actionOwner, setActionOwner] = useState("");
+  const outcomeAction = useAsyncAction({ fallbackError: "Could not save the meeting outcome." });
   const meeting = snapshot.meetings.find((item) => item.id === selectedId)
     ?? snapshot.meetings[0]
     ?? null;
@@ -240,6 +296,44 @@ export default function MeetingsView() {
     }
   }
 
+  async function cancel() {
+    if (!live) return;
+    setStarting(true);
+    setError(null);
+    try {
+      await cancelLabRun(live.run_id);
+      await useLabStore.getState().refresh();
+    } catch (caught) {
+      setError(errorText(caught));
+    } finally {
+      setStarting(false);
+    }
+  }
+
+  async function saveOutcome() {
+    if (!meeting) return;
+    const result = await outcomeAction.run(() => recordMeetingOutcome(meeting.id, {
+      summary: outcomeSummary,
+      decisions: decisions.split(/\r?\n/).map((item) => item.trim()).filter(Boolean),
+      disagreements: disagreements.split(/\r?\n/).map((item) => item.trim()).filter(Boolean),
+    }));
+    if (result.ok) {
+      setOutcomeSummary(""); setDecisions(""); setDisagreements("");
+    }
+  }
+
+  async function saveAction() {
+    if (!meeting?.project_id) return;
+    const result = await outcomeAction.run(() => createActionItem({
+      project_id: meeting.project_id as string,
+      meeting_id: meeting.id,
+      ...(actionOwner ? { owner_agent_id: actionOwner } : {}),
+      title: actionTitle,
+      details: `Follow-up from ${meeting.title}`,
+    }));
+    if (result.ok) setActionTitle("");
+  }
+
   return (
     <div className="lab-view-with-inspector">
       <main className="lab-view lab-meeting-view">
@@ -253,6 +347,7 @@ export default function MeetingsView() {
             </p>
           </div>
           <div className="lab-header-actions">
+            {meeting && !isRunning && <Button onClick={() => setShowEdit(true)}>Edit room</Button>}
             <Button
               variant="primary"
               icon="plus"
@@ -387,9 +482,42 @@ export default function MeetingsView() {
               {live?.status === "failed" && live.error && (
                 <p className="lab-inline-error">Meeting failed: {live.error}</p>
               )}
+              {meeting.status === "completed" && !isRunning && (
+                <section className="lab-inspector-section">
+                  <h3>Human-reviewed outcome</h3>
+                  <Field label="Summary">
+                    <textarea
+                      rows={4}
+                      value={outcomeSummary}
+                      onChange={(event) => setOutcomeSummary(event.target.value)}
+                      placeholder="What should the durable record say?"
+                    />
+                  </Field>
+                  <Field label="Decisions" hint="One decision per line.">
+                    <textarea rows={3} value={decisions} onChange={(event) => setDecisions(event.target.value)} />
+                  </Field>
+                  <Field label="Open disagreements" hint="One disagreement per line.">
+                    <textarea rows={3} value={disagreements} onChange={(event) => setDisagreements(event.target.value)} />
+                  </Field>
+                  <Button disabled={!outcomeSummary.trim()} onClick={() => void saveOutcome()}>
+                    Record outcome
+                  </Button>
+                  <hr />
+                  <Field label="Action item"><input value={actionTitle} onChange={(event) => setActionTitle(event.target.value)} /></Field>
+                  <Field label="Suggested owner"><select value={actionOwner} onChange={(event) => setActionOwner(event.target.value)}><option value="">Unassigned</option>{rosterIds.map((id) => { const owner = snapshot.agents.find((item) => item.id === id); return owner ? <option key={id} value={id}>{owner.name}</option> : null; })}</select></Field>
+                  <Button disabled={!actionTitle.trim()} onClick={() => void saveAction()}>Create action</Button>
+                </section>
+              )}
+              {outcomeAction.error && <p className="lab-inline-error" role="alert">{outcomeAction.error}</p>}
             </div>
             <footer className="lab-inspector-footer">
-              <Button
+              {isRunning ? <Button
+                variant="danger"
+                onClick={() => void cancel()}
+                disabled={starting}
+              >
+                {starting ? "Cancelling…" : "Cancel meeting"}
+              </Button> : <Button
                 variant="primary"
                 icon="play"
                 onClick={() => void run()}
@@ -400,7 +528,7 @@ export default function MeetingsView() {
                   : meeting.status === "completed"
                     ? "Run another round"
                     : "Start meeting"}
-              </Button>
+              </Button>}
             </footer>
           </>
         ) : (
@@ -418,6 +546,11 @@ export default function MeetingsView() {
           onClose={() => setShowCreate(false)}
         >
           <MeetingForm onClose={() => setShowCreate(false)} />
+        </Modal>
+      )}
+      {showEdit && meeting && (
+        <Modal title="Edit meeting room" description="The transcript remains immutable; this updates the room definition." onClose={() => setShowEdit(false)}>
+          <MeetingEditForm meeting={meeting} onClose={() => setShowEdit(false)} />
         </Modal>
       )}
     </div>

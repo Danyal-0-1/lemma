@@ -190,10 +190,18 @@ class MockProvider:
     """
 
     async def stream_chat(
-        self, model: str, messages: list[ChatMessage]
+        self,
+        model: str,
+        messages: list[ChatMessage],
+        *,
+        max_output_tokens: int | None = None,
     ) -> AsyncIterator[StreamEvent]:
         """Stream a canned answer, then report a plausible (fake) token usage."""
         answer = _pick_canned(messages)
+        if max_output_tokens is not None:
+            # The mock uses a conservative four-character token approximation. It
+            # mirrors a provider-side ceiling so budget tests remain meaningful.
+            answer = answer[: max_output_tokens * 4]
 
         for chunk in _chunk_words(answer):
             yield TextDelta(text=chunk)

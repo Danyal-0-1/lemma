@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import { useAppStore } from "../../store/appStore";
+import { useDialogFocus } from "../../lib/dialog";
 import {
   type ThemePreference,
   usePreferencesStore,
@@ -35,6 +36,7 @@ function AccountMenu() {
   const status = useAppStore((state) => state.status);
   const mock = useAppStore((state) => state.mock);
   const hostExecution = useAppStore((state) => state.hostExecutionEnabled);
+  const headlessCoding = useAppStore((state) => state.headlessCodingEnabled);
   const ref = useRef<HTMLDivElement>(null);
   useDismiss(ref, () => setOverlay(null));
 
@@ -48,8 +50,9 @@ function AccountMenu() {
         <span><i className={`shell-status-dot is-${status}`} />Backend</span><b>{status}</b>
         <span>Provider</span><b>{mock ? "Mock / local" : "Configured"}</b>
         <span>Host tools</span><b>{hostExecution ? "Enabled" : "Locked"}</b>
+        <span>Headless coding</span><b>{headlessCoding ? "Enabled" : "Locked"}</b>
       </div>
-      <p>Account data and research stay on this machine. No cloud identity is required.</p>
+      <p>Durable records stay local. When mock mode is off, selected prompts and context go to the configured model provider.</p>
       <button type="button" onClick={() => setOverlay("settings")}>
         <Icon name="settings" size={15} /> Manage Settings
       </button>
@@ -68,16 +71,14 @@ function SettingsModal() {
   const setMinimap = usePreferencesStore((state) => state.setMinimap);
   const wordWrap = usePreferencesStore((state) => state.wordWrap);
   const setWordWrap = usePreferencesStore((state) => state.setWordWrap);
-
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent) => event.key === "Escape" && setOverlay(null);
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [setOverlay]);
+  const hostExecution = useAppStore((state) => state.hostExecutionEnabled);
+  const headlessCoding = useAppStore((state) => state.headlessCodingEnabled);
+  const dialogRef = useRef<HTMLElement>(null);
+  useDialogFocus(dialogRef, () => setOverlay(null));
 
   return (
     <div className="shell-settings-backdrop" onMouseDown={(event) => event.currentTarget === event.target && setOverlay(null)}>
-      <section className="shell-settings" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+      <section ref={dialogRef} className="shell-settings" role="dialog" aria-modal="true" aria-labelledby="settings-title" tabIndex={-1}>
         <header>
           <div><span>Preferences</span><h2 id="settings-title">Settings</h2></div>
           <button type="button" className="lab-icon-button" onClick={() => setOverlay(null)} aria-label="Close settings"><Icon name="close" /></button>
@@ -129,6 +130,10 @@ function SettingsModal() {
                 <div className="shell-security-note">
                   <Icon name="check" size={18} />
                   <span><strong>Agents remain isolated</strong><small>Research roles and duty cards never grant shell, filesystem, connector, or credential access.</small></span>
+                </div>
+                <div className="shell-security-note">
+                  <Icon name="security" size={18} />
+                  <span><strong>Host tools: {hostExecution ? "enabled" : "locked"} · Headless: {headlessCoding ? "enabled" : "locked"}</strong><small>Headless work additionally requires a durable per-job approval and remains a trusted host process.</small></span>
                 </div>
               </section>
             )}

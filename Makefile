@@ -10,7 +10,7 @@
 # a file named "dev" in this folder would make `make dev` do nothing.
 # ─────────────────────────────────────────────────────────────────────────────
 
-.PHONY: help install backend frontend dev test lint linux-bundle linux-deb
+.PHONY: help install backend frontend dev test lint db-backup db-migrate linux-bundle linux-deb
 
 # Running `make` with no target prints this help (the first target is the default,
 # but we make `help` explicit for clarity).
@@ -22,6 +22,8 @@ help:
 	@echo "  make dev       Run BOTH together (this is the one you want)"
 	@echo "  make test      Run backend pytest + frontend typecheck/build"
 	@echo "  make lint      Run ruff (backend) + tsc (frontend)"
+	@echo "  make db-backup Create and verify an online SQLite backup"
+	@echo "  make db-migrate  Back up, then apply pending database migrations"
 	@echo "  make linux-bundle                 Build an offline Linux release"
 	@echo "  make linux-deb BUNDLE=<directory> Wrap a Linux release in a .deb"
 
@@ -53,6 +55,13 @@ test:
 lint:
 	cd backend && uv run ruff check .
 	cd frontend && npm run typecheck
+
+# --- Database maintenance ---------------------------------------------------
+db-backup:
+	cd backend && uv run python -m app.db_admin backup
+
+db-migrate:
+	cd backend && uv run python -m app.db_admin migrate
 
 # --- Linux release packaging ------------------------------------------------
 # See linux_install/README.md for cache preparation and compatibility details.

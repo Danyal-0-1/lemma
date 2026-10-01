@@ -12,16 +12,16 @@ single-user application; it is not a remotely deployable multi-tenant service.
 
 ```
 ┌────────────────────────── FRONTEND (Vite + React + TS) ─────────────────────┐
-│ Activity rail │ Context explorer │ HQ / Organization / Research / Meetings │
-│               │                  │ Security / original three-pane Workbench │
+│ Activity rail │ Context explorer │ HQ / Org / Research / Knowledge / Evals │
+│               │                  │ Meetings / Operations / Security / IDE   │
 └──────▲────────┴────────▲─────────┴──────────────────────────▲───────────────┘
        │ REST actions    │ addressed WebSocket events         │ /pty (optional)
 ┌──────┴─────────────────┴────────────────────────────────────┴───────────────┐
 │                        BACKEND (FastAPI, Python 3.12+)                       │
 │ LocalOnlyMiddleware: loopback peer + Host + exact Origin                    │
 │                                                                              │
-│ Research Lab: departments · duty cards · projects · tasks · findings        │
-│   LabOrchestrator: prompt-only task turns + bounded meeting protocol         │
+│ Research Lab: evidence · claims · task DAG · dossiers · evals · policies    │
+│   LabOrchestrator: prompt-only turns · bounded meetings · durable jobs       │
 │   ModelProvider: Mock or LiteLLM → configured provider                      │
 │                                                                              │
 │ Original Workbench: ideation → approved Spec → workspace → review           │
@@ -31,17 +31,21 @@ single-user application; it is not a remotely deployable multi-tenant service.
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
-The critical boundary is vertical: research agents can call only the model provider.
-They cannot import or reach terminal, workspace, checks, environment, connector, or
-secret APIs. `ENABLE_HOST_EXECUTION` unlocks trusted-human workbench controls only.
+The critical boundary is vertical: ordinary research agents can call only the model
+provider. They cannot import or reach terminal, workspace, checks, environment,
+connector, or secret APIs. `ENABLE_HOST_EXECUTION` unlocks trusted-human workbench
+controls only. The optional M9 adapter sits on the host side of that boundary and
+requires a second switch, an approved durable plan, an active workspace, and an
+explicit executable path.
 
 ---
 
 ## Product areas
 
 - **R&D Studio.** Create durable departments or temporary mission teams, define agent
-  duty cards and communication scopes, assign tasks, review findings, and run fixed
-  roster meetings with one contribution per participant plus facilitator synthesis.
+  duty cards and communication scopes, capture checksum-addressed sources/excerpts,
+  assign dependency-aware tasks, review findings and evidence-backed claims, run fixed
+  roster meetings, compare models, export dossiers, and govern runs with project policy.
 - **Original Workbench — Phase 0, Ideation.** A fixed crew (Generator → Researcher →
   Critic → PM) debates a seed and converges on a human-approved **Spec**.
 - **Original Workbench — Phase 1, Build.** The approved Spec becomes a workspace; a
@@ -58,10 +62,13 @@ are not rendered.
    feature. Async + streaming, with LiteLLM underneath so `deepseek/…`, `anthropic/…`,
    `openai/…`, and local OpenAI-compatible endpoints are one interface. A `MockProvider`
    implements the same shape for zero-cost development.
-2. **`AgentProvider`** *(M5)* — coding agents that edit files and run commands. In v1
-   this is deliberately thin: the PTY terminal where the user drives the agent
-   interactively (their subscription, zero billing ambiguity). A headless variant is a
-   future option (M9), not v1.
+2. **`AgentProvider`** *(M5/M9)* — coding agents that edit files and run commands. The
+   default remains the PTY terminal where the user drives an agent interactively. An
+   optional Claude headless adapter is implemented behind two configuration switches
+   and a separate persisted approval gate. It uses fixed argv, a sanitized environment,
+   workspace-root validation, bounded time/output, and process-group cleanup. It is
+   still a trusted host process—not a sandbox—and its capability list records approved
+   intent rather than enforcing OS permissions.
 
 **Why no CrewAI/LangGraph:** the ideation loop is a sequential state machine of ~4 steps
 with one human gate. A framework would hide exactly the mechanics this codebase exists to
@@ -102,8 +109,21 @@ keeps both sides simple.
 SQLite (via SQLModel) at `backend/data/app.db` (gitignored). Original tables store
 ideation sessions, messages, append-only artifacts, cost, and workspaces. Lab tables
 store departments, agents, projects, tasks, runs, results, findings, meetings, ordered
-meeting messages, and append-only activity records. There is no migration system yet;
-back up the database before evolving schemas.
+meeting messages, and append-only activity records. Evidence/workflow tables add source
+documents and exact excerpts, reviews, claims, evidence edges, meeting outcomes/actions,
+task dependencies, trace links, policy, exact model-call provenance, templates,
+evaluations/scores, and approval-gated automation. A rebuildable local FTS5 index ranks
+research content; SQLite remains canonical. Alembic owns schema evolution;
+startup upgrades to its single current head and validates that every SQLModel table and
+column exists before serving requests. A legacy `create_all()` database is adopted by
+the `0001_current_schema` baseline without deleting its rows.
+
+Before applying any pending revision to a database with application tables, startup
+uses SQLite's online-backup API to create a consistent snapshot in `data/backups/`,
+runs an integrity check, and records its size, SHA-256, and Alembic revision in a JSON
+sidecar. `app.db_admin` also provides explicit backup, verification, migration, and
+restore commands. Restore requires its checksum sidecar, preserves the current database
+first, performs an atomic replacement, and shares a process lock with the backend.
 
 SQLite remains the live transactional source of truth. `state_vault.py` also renders a
 deterministic `lemma-state.json`, with credential-shaped fields redacted, into a
@@ -150,14 +170,27 @@ Native Python dependencies make a release specific to its CPU architecture, comp
 system C libraries, and exact Python `major.minor`. The builder records that value in
 `PYTHON_ABI`; `lemma-server` refuses a different interpreter, and the Debian package
 depends on the matching versioned Python package. Release manifests and archive/package
-checksums detect corruption or modification, but releases are not cryptographically
-signed. Installed builds retain the same fixed loopback ports and single-user security
-model as development; packaging does not make Lemma suitable for remote or multi-user
-deployment.
+checksums detect corruption or modification. The bundle also carries a manifest-covered,
+lock-derived CycloneDX SBOM. Detached minisign authentication of the manifest and
+archive/package is available but optional; verification becomes a hard requirement only
+when the operator supplies an independently trusted public key. Installed builds retain
+the same fixed loopback ports and single-user security model as development; packaging
+does not make Lemma suitable for remote or multi-user deployment.
 
 ---
 
-## Current state (R&D Studio plus M0–M8)
+## Current state (evidence-rich R&D Studio plus M0–M9)
+
+- **R&D control plane:** Knowledge captures immutable source identity and exact excerpts,
+  assembles bounded source packets, records human reviews and claim/evidence stance, and
+  provides local full-text search plus JSON/Markdown project dossiers. Task dependencies
+  are cycle-checked and enforced at run start; meeting decisions/actions can be promoted
+  into tasks; trace links connect research to downstream work. Operations exposes durable
+  run attempts, cancel/retry lineage, exact prompt/model provenance, cumulative token/cost
+  limits, model allowlists, recorded data classification, concurrency limits, validated
+  template instantiation, and startup recovery for interrupted background work.
+  Evaluations run models sequentially with cancellation, usage/latency records, and human
+  scores. Source context, transcripts, output, and subprocesses are explicitly bounded.
 
 - **M0:** the shell — FastAPI `GET /health` + the three-panel VS Code-dark layout.
 - **M1:** the event pipe — `events.py` (Event + EventBus + Sequencer) and `ws.py`
@@ -213,6 +246,11 @@ deployment.
   shortcuts** (new session, focus Diff/Terminal/Checks — `buildTab` lifted into the
   store); README first-run walkthrough + troubleshooting; `learning/exercises.md`; and a
   simplicity audit (exactly three panels, phase-aware tabs, no inert controls).
+
+- **M9:** optional headless coding. Operations persists the request, plan, approved
+  capability intent, decision, output, and failure state. Execution stays off until
+  host execution and the separate M9 flag are both enabled; only an explicit absolute
+  Claude executable is accepted, and each plan still needs human approval.
 
 All original milestones and the R&D Studio are implemented. Model calls use the shared
 provider layer and cost records; durable outcomes go to SQLite; addressed live progress

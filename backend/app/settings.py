@@ -66,6 +66,19 @@ class Settings(BaseSettings):
     # surface off unless the local operator opts in deliberately.
     enable_host_execution: bool = False
 
+    # Optional M9 automation has a second, independent switch. It remains disabled
+    # even when terminals/checks are enabled, and the executable must be an explicit
+    # absolute path so PATH shadowing cannot select a different program.
+    enable_headless_coding: bool = Field(
+        default=False, validation_alias="LEMMA_ENABLE_HEADLESS_CODING"
+    )
+    headless_agent_executable: str = Field(
+        default="", validation_alias="LEMMA_HEADLESS_AGENT_EXECUTABLE"
+    )
+    headless_agent_timeout_seconds: int = Field(
+        default=900, ge=30, le=3_600, validation_alias="LEMMA_HEADLESS_AGENT_TIMEOUT_SECONDS"
+    )
+
     # --- Server binding ---
     host: str = "127.0.0.1"
     port: int = 8000

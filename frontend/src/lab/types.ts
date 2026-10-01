@@ -2,7 +2,15 @@
 // The backend owns the canonical snake_case schema; this file keeps the UI resilient
 // while an older local database is being upgraded or optional collections are absent.
 
-export type ResearchView = "hq" | "organization" | "research" | "meetings" | "security";
+export type ResearchView =
+  | "hq"
+  | "organization"
+  | "research"
+  | "knowledge"
+  | "evaluations"
+  | "meetings"
+  | "operations"
+  | "security";
 export type IdeView = "explorer" | "search" | "source_control" | "terminal";
 export type LabView = ResearchView | IdeView | "workbench";
 
@@ -114,12 +122,189 @@ export interface LabRun {
   project_id: string;
   task_id: string | null;
   meeting_id: string | null;
+  retry_of_run_id?: string | null;
+  attempt?: number;
   status: RunStatus;
   error?: string | null;
   tokens_in: number;
   tokens_out: number;
   started_at?: string;
   completed_at?: string | null;
+}
+
+export interface SourceDocument {
+  id: string;
+  project_id: string;
+  title: string;
+  source_type: "note" | "url" | "file" | "transcript" | string;
+  origin: string;
+  content: string;
+  content_sha256: string;
+  metadata_json: Record<string, unknown>;
+  status: string;
+  created_at: string;
+}
+
+export interface SourceExcerpt {
+  id: string;
+  project_id: string;
+  source_id: string;
+  locator: string;
+  quote: string;
+  start_offset: number;
+  end_offset: number;
+  quote_sha256: string;
+  created_at: string;
+}
+
+export interface FindingReview {
+  id: string;
+  project_id: string;
+  finding_id: string;
+  decision: "accepted" | "rejected" | "needs_revision" | string;
+  notes: string;
+  reviewer: string;
+  created_at: string;
+}
+
+export interface ClaimEvidence {
+  id: string;
+  project_id: string;
+  claim_id: string;
+  excerpt_id: string;
+  stance: "supports" | "contradicts" | "contextualizes" | string;
+  note: string;
+  created_at: string;
+}
+
+export interface ResearchClaim {
+  id: string;
+  project_id: string;
+  finding_id: string | null;
+  statement: string;
+  confidence: number | null;
+  status: string;
+  created_at: string;
+}
+
+export interface ActionItem {
+  id: string;
+  project_id: string;
+  meeting_id: string | null;
+  owner_agent_id: string | null;
+  title: string;
+  details: string;
+  status: string;
+  promoted_task_id: string | null;
+  due_at: string | null;
+}
+
+export interface TraceLink {
+  id: string;
+  project_id: string;
+  source_type: string;
+  source_id: string;
+  target_type: string;
+  target_id: string;
+  relationship: string;
+  note: string;
+}
+
+export interface ProjectPolicy {
+  project_id: string;
+  data_classification: "local_only" | "confidential" | "public";
+  allowed_models: string[];
+  max_run_tokens: number;
+  max_run_usd: number;
+  max_project_usd: number;
+  max_concurrent_runs: number;
+}
+
+export interface EvaluationExperiment {
+  id: string;
+  project_id: string;
+  name: string;
+  prompt: string;
+  models: string[];
+  criteria: string[];
+  status: string;
+  created_at: string;
+}
+
+export interface EvaluationCandidate {
+  id: string;
+  experiment_id: string;
+  project_id: string;
+  model: string;
+  response: string;
+  status: string;
+  tokens_in: number;
+  tokens_out: number;
+  usd: number;
+  latency_ms: number | null;
+  error: string | null;
+}
+
+export interface AutomationRun {
+  id: string;
+  project_id: string | null;
+  workspace_id: string | null;
+  provider: string;
+  request: string;
+  plan: string;
+  capabilities: string[];
+  status: string;
+  approval_note: string;
+  output: string;
+  error: string | null;
+  created_at: string;
+}
+
+export interface LabTemplate {
+  id: string;
+  name: string;
+  kind: "project" | "task" | "meeting" | "evaluation" | string;
+  description: string;
+  payload: Record<string, unknown>;
+  status: string;
+  created_at: string;
+}
+
+export interface ProjectDossier {
+  project: Project;
+  policy: ProjectPolicy;
+  sources: SourceDocument[];
+  excerpts: SourceExcerpt[];
+  source_links: Array<{
+    id: string;
+    task_id: string;
+    source_id: string;
+    purpose: string;
+    created_at: string;
+  }>;
+  tasks: ResearchTask[];
+  results: ResearchResult[];
+  findings: Finding[];
+  finding_reviews: FindingReview[];
+  claims: ResearchClaim[];
+  claim_evidence: ClaimEvidence[];
+  dependencies: Array<{
+    id: string;
+    task_id: string;
+    depends_on_task_id: string;
+    created_at: string;
+  }>;
+  meetings: Meeting[];
+  outcomes: Array<{
+    id: string;
+    meeting_id: string;
+    summary: string;
+    decisions: string[];
+    disagreements: string[];
+  }>;
+  actions: ActionItem[];
+  runs: LabRun[];
+  trace_links: TraceLink[];
 }
 
 export interface Activity {
@@ -313,6 +498,8 @@ export function normalizeLabSnapshot(value: unknown): LabSnapshot {
       project_id: text(row.project_id),
       task_id: nullableText(row.task_id),
       meeting_id: nullableText(row.meeting_id),
+      retry_of_run_id: nullableText(row.retry_of_run_id),
+      attempt: number(row.attempt, 1),
       status: text(row.status, "queued"),
       error: nullableText(row.error),
       tokens_in: number(row.tokens_in),

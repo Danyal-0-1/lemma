@@ -33,6 +33,11 @@ from app.ideation import repo
 from app.ideation.control import cancel_session, resolve_approval, start_session
 from app.ideation.export import render_session_markdown
 from app.lab import repo as lab_repo
+from app.lab import workflows as lab_workflows
+from app.lab.advanced_routes import router as lab_advanced_router
+from app.lab.automation import automation_runner
+from app.lab.evaluation import evaluation_runner
+from app.lab.orchestrator import lab_orchestrator
 from app.lab.routes import router as lab_router
 from app.oneshot import run_oneshot
 from app.security import LocalOnlyMiddleware, websocket_is_trusted
@@ -100,6 +105,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     recovered = await asyncio.to_thread(lab_repo.recover_stale_runs)
     if recovered:
         logger.warning("recovered %d interrupted research run(s) as failed", recovered)
+    advanced_recovered = await asyncio.to_thread(lab_workflows.recover_interrupted_work)
+    if any(advanced_recovered.values()):
+        logger.warning(
+            "recovered interrupted advanced work as failed: %s",
+            advanced_recovered,
+        )
 
     # Keep a human-reviewable local Git history of the durable application state.
     # The vault has no remote by default and this process never pushes it.
@@ -129,6 +140,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         yield  # ── the app serves requests while suspended here ──
     finally:
+        # Persist cancellation before closing the database so no new background
+        # feature leaves a misleading "running" row across a restart.
+        await asyncio.gather(
+            lab_orchestrator.shutdown(),
+            evaluation_runner.shutdown(),
+            automation_runner.shutdown(),
+            return_exceptions=True,
+        )
         if vault_stop is not None and vault_task is not None:
             vault_stop.set()
             await vault_task
@@ -149,13 +168,14 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_FRONTEND_ORIGINS,
     allow_credentials=False,
-    allow_methods=["GET", "POST", "PUT", "PATCH", "OPTIONS"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Content-Type"],
 )
 # This also checks the actual peer address, closing the gap between the HOST setting
 # and a Uvicorn command-line --host override.
 app.add_middleware(LocalOnlyMiddleware, allowed_origins=ALLOWED_FRONTEND_ORIGINS)
 app.include_router(lab_router)
+app.include_router(lab_advanced_router)
 
 
 def _require_host_execution() -> None:
@@ -180,6 +200,7 @@ def health() -> dict[str, object]:
         "version": SERVER_VERSION,
         "mock_llm": settings.mock_llm,
         "enable_host_execution": settings.enable_host_execution,
+        "enable_headless_coding": settings.enable_headless_coding,
     }
 
 

@@ -9,6 +9,7 @@ BUNDLE=""
 PREFIX=""
 SCOPE="user"
 SCOPE_SET=0
+VERIFY_KEY=""
 
 usage() {
   cat <<'EOF'
@@ -29,6 +30,9 @@ Options:
                       /opt/lemma for --system)
   --user              Install for the current user (default)
   --system            Install system-wide; requires root
+  --minisign-public-key FILE
+                      Require and verify manifest.sha256.minisig with this
+                      independently trusted minisign public-key file
   -h, --help          Show this help
 
 The installer verifies manifest.sha256, refuses symbolic links and special
@@ -86,6 +90,11 @@ while (($#)); do
       SCOPE_SET=1
       shift
       ;;
+    --minisign-public-key)
+      need_value "$@"
+      VERIFY_KEY="$2"
+      shift 2
+      ;;
     -h|--help)
       usage
       exit 0
@@ -110,6 +119,13 @@ for command_name in chmod cp dirname find grep install ln mktemp mv readlink \
   command -v "$command_name" >/dev/null 2>&1 || \
     die "required command is unavailable: $command_name"
 done
+if [[ -n "$VERIFY_KEY" ]]; then
+  command -v minisign >/dev/null 2>&1 || \
+    die "minisign is required only when --minisign-public-key is used"
+  [[ -f "$VERIFY_KEY" && ! -L "$VERIFY_KEY" ]] || \
+    die "trusted minisign public key must be a regular, non-symbolic-link file"
+  VERIFY_KEY="$(realpath -e -- "$VERIFY_KEY")"
+fi
 
 [[ -n "${HOME:-}" && "$HOME" == /* ]] || die "HOME must be an absolute path"
 if [[ "$SCOPE" == "system" && "$EUID" -ne 0 ]]; then
@@ -243,7 +259,10 @@ required_bundle_files=(
   bin/lemma-doctor
   libexec/backend_runner.py
   libexec/frontend_server.py
+  verify-release.sh
+  share/doc/lemma-linux/SBOM.cdx.json
   share/doc/lemma-linux/THIRD_PARTY_NOTICES.md
+  share/lemma/app/linux_install/sbom.py
   share/applications/io.lemma.Lemma.desktop.in
   share/icons/hicolor/scalable/apps/io.lemma.Lemma.svg
   share/metainfo/io.lemma.Lemma.metainfo.xml
@@ -269,6 +288,8 @@ for executable_path in install.sh uninstall.sh bin/lemma bin/lemma-server bin/le
   [[ -x "$BUNDLE/$executable_path" ]] || \
     die "bundle launcher is not executable: $executable_path"
 done
+[[ -x "$BUNDLE/verify-release.sh" ]] || \
+  die "bundle launcher is not executable: verify-release.sh"
 
 validate_relative_path() {
   local relative_path="$1"
@@ -281,6 +302,24 @@ validate_relative_path() {
   [[ "$relative_path" =~ ^[A-Za-z0-9._/+@=,:!~-]+$ ]] || return 1
 }
 
+manifest_signature_count=0
+if [[ -e "$BUNDLE/manifest.sha256.minisig" || \
+      -L "$BUNDLE/manifest.sha256.minisig" ]]; then
+  [[ -f "$BUNDLE/manifest.sha256.minisig" && \
+     ! -L "$BUNDLE/manifest.sha256.minisig" ]] || \
+    die "bundle manifest signature is not a regular file"
+  manifest_signature_count=1
+fi
+if [[ -n "$VERIFY_KEY" ]]; then
+  [[ "$manifest_signature_count" -eq 1 ]] || \
+    die "--minisign-public-key requires manifest.sha256.minisig"
+  minisign -V -q -p "$VERIFY_KEY" -m "$BUNDLE/manifest.sha256" \
+    -x "$BUNDLE/manifest.sha256.minisig" || \
+    die "bundle manifest signature verification failed"
+elif [[ "$manifest_signature_count" -eq 1 ]]; then
+  warn "bundle signature was not authenticated; use --minisign-public-key to require it"
+fi
+
 declare -A manifest_paths=()
 manifest_count=0
 while IFS= read -r checksum_line || [[ -n "$checksum_line" ]]; do
@@ -290,8 +329,9 @@ while IFS= read -r checksum_line || [[ -n "$checksum_line" ]]; do
   # Bash's regex above consumes: 64 hex digits, two spaces, and './'.
   validate_relative_path "$relative_path" || \
     die "manifest.sha256 contains an unsafe path: $relative_path"
-  [[ "$relative_path" != "manifest.sha256" ]] || \
-    die "manifest.sha256 must not list itself"
+  [[ "$relative_path" != "manifest.sha256" && \
+     "$relative_path" != "manifest.sha256.minisig" ]] || \
+    die "the detached manifest and its signature must not list themselves"
   [[ -z "${manifest_paths[$relative_path]+present}" ]] || \
     die "manifest.sha256 contains a duplicate path: $relative_path"
   [[ -f "$BUNDLE/$relative_path" ]] || \
@@ -310,12 +350,13 @@ while IFS= read -r -d '' relative_path; do
   new_file_set["$relative_path"]=1
   new_files+=("$relative_path")
   if [[ "$relative_path" != "manifest.sha256" && \
+        "$relative_path" != "manifest.sha256.minisig" && \
         -z "${manifest_paths[$relative_path]+present}" ]]; then
     die "bundle file is not covered by manifest.sha256: $relative_path"
   fi
 done < <(cd "$BUNDLE" && find . -mindepth 1 -type f -print0 | LC_ALL=C sort -z)
 
-if ((${#new_files[@]} != manifest_count + 1)); then
+if ((${#new_files[@]} != manifest_count + 1 + manifest_signature_count)); then
   die "manifest.sha256 does not describe the complete bundle"
 fi
 
@@ -392,6 +433,9 @@ actual_python_abi="$($PYTHON_BIN -I -B -c \
   'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
 [[ "$actual_python_abi" == "$PYTHON_ABI" ]] || \
   die "bundle requires Python $PYTHON_ABI, but $PYTHON_BIN is $actual_python_abi"
+"$PYTHON_BIN" -I -B "$BUNDLE/share/lemma/app/linux_install/sbom.py" validate \
+  "$BUNDLE/share/doc/lemma-linux/SBOM.cdx.json" \
+  --application-version "$VERSION" || die "bundle SBOM validation failed"
 
 MARKER="$PREFIX/.lemma-install"
 NEXT_MARKER="$PREFIX/.lemma-install.next"

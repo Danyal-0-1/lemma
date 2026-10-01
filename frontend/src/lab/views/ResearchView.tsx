@@ -1,8 +1,18 @@
 // Project/task board with isolated live streams addressed by run and task IDs.
 
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 
-import { createLabEntity, runLabTask } from "../../lib/api";
+import {
+  addTaskDependency,
+  cancelLabRun,
+  createLabEntity,
+  getTaskReadiness,
+  removeTaskDependency,
+  retryLabRun,
+  runLabTask,
+  updateLabEntity,
+} from "../../lib/api";
+import { useAsyncAction } from "../../lib/asyncAction";
 import { Icon } from "../components/Icons";
 import {
   AgentAvatar,
@@ -17,41 +27,32 @@ import {
 import { useLabStore } from "../store";
 import type { Project, ResearchTask } from "../types";
 
-function errorText(error: unknown): string {
-  return error instanceof Error ? error.message : "The request failed.";
-}
-
 function ProjectForm({ onClose }: { onClose: () => void }) {
   const refresh = useLabStore((state) => state.refresh);
   const selectProject = useLabStore((state) => state.selectProject);
   const [name, setName] = useState("");
   const [objective, setObjective] = useState("");
   const [description, setDescription] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
+  const action = useAsyncAction({ fallbackError: "Could not create the project." });
 
   async function submit(event: FormEvent) {
     event.preventDefault();
-    setSaving(true);
-    setError(null);
-    try {
+    const result = await action.run(async () => {
       const project = await createLabEntity<Project>("projects", {
         name,
         objective,
         description,
       });
       await refresh();
-      selectProject(project.id);
-      onClose();
-    } catch (caught) {
-      setError(errorText(caught));
-    } finally {
-      setSaving(false);
-    }
+      return project;
+    });
+    if (!result.ok) return;
+    selectProject(result.value.id);
+    onClose();
   }
 
   return (
-    <form className="lab-form" onSubmit={(event) => void submit(event)}>
+    <form className="lab-form" aria-busy={action.pending} onSubmit={(event) => void submit(event)}>
       <Field label="Project name">
         <input
           required
@@ -81,19 +82,46 @@ function ProjectForm({ onClose }: { onClose: () => void }) {
           placeholder="Scope, constraints, or background for the whole project."
         />
       </Field>
-      {error && <p className="lab-inline-error">{error}</p>}
+      {action.error && <p className="lab-inline-error" role="alert">{action.error}</p>}
       <div className="lab-form-actions">
-        <Button onClick={onClose}>Cancel</Button>
+        <Button onClick={onClose} disabled={action.pending}>Cancel</Button>
         <Button
           type="submit"
           variant="primary"
-          disabled={saving || !name.trim() || !objective.trim()}
+          disabled={action.pending || !name.trim() || !objective.trim()}
         >
-          {saving ? "Creating…" : "Create project"}
+          {action.pending ? "Creating…" : "Create project"}
         </Button>
       </div>
     </form>
   );
+}
+
+function ProjectEditForm({ project, onClose }: { project: Project; onClose: () => void }) {
+  const refresh = useLabStore((state) => state.refresh);
+  const [name, setName] = useState(project.name);
+  const [objective, setObjective] = useState(project.objective);
+  const [description, setDescription] = useState(project.description);
+  const [status, setStatus] = useState(project.status);
+  const action = useAsyncAction({ fallbackError: "Could not update the project." });
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    const result = await action.run(async () => {
+      await updateLabEntity("projects", project.id, { name, objective, description, status });
+      await refresh();
+    });
+    if (result.ok) onClose();
+  }
+
+  return <form className="lab-form" onSubmit={(event) => void submit(event)}>
+    <Field label="Project name"><input required value={name} onChange={(event) => setName(event.target.value)} /></Field>
+    <Field label="Research objective"><textarea required rows={5} value={objective} onChange={(event) => setObjective(event.target.value)} /></Field>
+    <Field label="Context"><textarea rows={4} value={description} onChange={(event) => setDescription(event.target.value)} /></Field>
+    <Field label="Lifecycle"><select value={status} onChange={(event) => setStatus(event.target.value)}><option value="draft">Draft</option><option value="active">Active</option><option value="completed">Completed</option><option value="archived">Archived</option></select></Field>
+    {action.error && <p className="lab-inline-error" role="alert">{action.error}</p>}
+    <div className="lab-form-actions"><Button onClick={onClose}>Cancel</Button><Button type="submit" variant="primary" disabled={!name.trim() || !objective.trim() || action.pending}>Save project</Button></div>
+  </form>;
 }
 
 function TaskForm({ projectId, onClose }: { projectId: string; onClose: () => void }) {
@@ -107,15 +135,12 @@ function TaskForm({ projectId, onClose }: { projectId: string; onClose: () => vo
   const [objective, setObjective] = useState("");
   const [context, setContext] = useState("");
   const [expected, setExpected] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
+  const action = useAsyncAction({ fallbackError: "Could not create the research task." });
 
   async function submit(event: FormEvent) {
     event.preventDefault();
-    setSaving(true);
-    setError(null);
     const agent = agents.find((item) => item.id === agentId);
-    try {
+    const result = await action.run(async () => {
       const task = await createLabEntity<ResearchTask>("tasks", {
         project_id: projectId,
         assigned_agent_id: agentId,
@@ -126,17 +151,15 @@ function TaskForm({ projectId, onClose }: { projectId: string; onClose: () => vo
         expected_output: expected,
       });
       await refresh();
-      selectTask(task.id);
-      onClose();
-    } catch (caught) {
-      setError(errorText(caught));
-    } finally {
-      setSaving(false);
-    }
+      return task;
+    });
+    if (!result.ok) return;
+    selectTask(result.value.id);
+    onClose();
   }
 
   return (
-    <form className="lab-form" onSubmit={(event) => void submit(event)}>
+    <form className="lab-form" aria-busy={action.pending} onSubmit={(event) => void submit(event)}>
       <Field label="Assigned researcher">
         <select required value={agentId} onChange={(event) => setAgentId(event.target.value)}>
           <option value="" disabled>Select an active agent</option>
@@ -191,15 +214,93 @@ function TaskForm({ projectId, onClose }: { projectId: string; onClose: () => vo
       {agents.length === 0 && (
         <p className="lab-inline-error">Create an active agent before assigning work.</p>
       )}
-      {error && <p className="lab-inline-error">{error}</p>}
+      {action.error && <p className="lab-inline-error" role="alert">{action.error}</p>}
       <div className="lab-form-actions">
-        <Button onClick={onClose}>Cancel</Button>
+        <Button onClick={onClose} disabled={action.pending}>Cancel</Button>
         <Button
           type="submit"
           variant="primary"
-          disabled={saving || !agentId || !title.trim() || !objective.trim()}
+          disabled={action.pending || !agentId || !title.trim() || !objective.trim()}
         >
-          {saving ? "Creating…" : "Create task"}
+          {action.pending ? "Creating…" : "Create task"}
+        </Button>
+      </div>
+    </form>
+  );
+}
+
+function TaskEditForm({ task, onClose }: { task: ResearchTask; onClose: () => void }) {
+  const agents = useLabStore((state) => state.snapshot.agents).filter(
+    (agent) => agent.status === "active",
+  );
+  const refresh = useLabStore((state) => state.refresh);
+  const [agentId, setAgentId] = useState(task.assigned_agent_id ?? "");
+  const [title, setTitle] = useState(task.title);
+  const [objective, setObjective] = useState(task.objective);
+  const [context, setContext] = useState(task.context);
+  const [expected, setExpected] = useState(task.expected_output);
+  const [status, setStatus] = useState(task.status === "running" ? "queued" : task.status);
+  const action = useAsyncAction({ fallbackError: "Could not update the research task." });
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    const agent = agents.find((item) => item.id === agentId);
+    if (!agent) return;
+    const result = await action.run(async () => {
+      await updateLabEntity("tasks", task.id, {
+        assigned_agent_id: agent.id,
+        department_id: agent.department_id,
+        title,
+        objective,
+        context,
+        expected_output: expected,
+        status,
+      });
+      await refresh();
+    });
+    if (result.ok) onClose();
+  }
+
+  return (
+    <form className="lab-form" aria-busy={action.pending} onSubmit={(event) => void submit(event)}>
+      <Field label="Assigned researcher">
+        <select required value={agentId} onChange={(event) => setAgentId(event.target.value)}>
+          <option value="" disabled>Select an active agent</option>
+          {agents.map((agent) => (
+            <option key={agent.id} value={agent.id}>{agent.name} — {agent.role}</option>
+          ))}
+        </select>
+      </Field>
+      <Field label="Task title">
+        <input required maxLength={160} value={title} onChange={(event) => setTitle(event.target.value)} autoFocus />
+      </Field>
+      <Field label="Objective">
+        <textarea required maxLength={6000} rows={4} value={objective} onChange={(event) => setObjective(event.target.value)} />
+      </Field>
+      <Field label="Supplied context" hint="Treated as untrusted research data, never as system instructions.">
+        <textarea maxLength={12000} rows={6} value={context} onChange={(event) => setContext(event.target.value)} />
+      </Field>
+      <Field label="Expected deliverable">
+        <textarea maxLength={4000} rows={3} value={expected} onChange={(event) => setExpected(event.target.value)} />
+      </Field>
+      <Field label="Lifecycle">
+        <select value={status} onChange={(event) => setStatus(event.target.value)}>
+          <option value="queued">Queued</option>
+          <option value="completed">Completed</option>
+          <option value="failed">Needs attention</option>
+          <option value="cancelled">Cancelled</option>
+        </select>
+      </Field>
+      {agents.length === 0 && <p className="lab-inline-error">Create an active agent before reassigning work.</p>}
+      {action.error && <p className="lab-inline-error" role="alert">{action.error}</p>}
+      <div className="lab-form-actions">
+        <Button onClick={onClose} disabled={action.pending}>Cancel</Button>
+        <Button
+          type="submit"
+          variant="primary"
+          disabled={action.pending || !agentId || !title.trim() || !objective.trim()}
+        >
+          {action.pending ? "Saving…" : "Save task"}
         </Button>
       </div>
     </form>
@@ -215,19 +316,66 @@ function TaskInspector({ task }: { task: ResearchTask }) {
   const live = Object.values(liveRuns).filter((run) => run.task_id === task.id).at(-1);
   const isRunning = live?.status === "running";
   const [instructions, setInstructions] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [starting, setStarting] = useState(false);
+  const [dependencyId, setDependencyId] = useState("");
+  const [editOpen, setEditOpen] = useState(false);
+  const [readiness, setReadiness] = useState<{
+    ready: boolean;
+    dependencies: Array<{
+      dependency_id: string;
+      task_id: string;
+      title: string;
+      status: string;
+    }>;
+    blockers: Array<{
+      dependency_id: string;
+      task_id: string;
+      title: string;
+      status: string;
+    }>;
+  } | null>(null);
+  const action = useAsyncAction({ fallbackError: "Could not start the research run." });
+  const candidates = snapshot.tasks.filter(
+    (item) => item.project_id === task.project_id && item.id !== task.id,
+  );
+  const prior = [...snapshot.runs]
+    .reverse()
+    .find((run) => run.task_id === task.id && ["failed", "cancelled"].includes(run.status));
+
+  useEffect(() => {
+    setDependencyId("");
+    void getTaskReadiness(task.id).then(setReadiness).catch(() => setReadiness(null));
+  }, [task.id]);
 
   async function run() {
-    setStarting(true);
-    setError(null);
-    try {
-      const response = await runLabTask(task.id, instructions);
-      registerRun(response);
-    } catch (caught) {
-      setError(errorText(caught));
-    } finally {
-      setStarting(false);
+    const result = await action.run(() => runLabTask(task.id, instructions));
+    if (result.ok) registerRun(result.value);
+  }
+
+  async function addDependency() {
+    if (!dependencyId) return;
+    const result = await action.run(() => addTaskDependency(task.id, dependencyId));
+    if (result.ok) {
+      setDependencyId("");
+      setReadiness(await getTaskReadiness(task.id));
+    }
+  }
+
+  async function removeDependency(dependencyId: string) {
+    const result = await action.run(() => removeTaskDependency(dependencyId));
+    if (result.ok) setReadiness(await getTaskReadiness(task.id));
+  }
+
+  async function cancel() {
+    if (!live) return;
+    const result = await action.run(() => cancelLabRun(live.run_id));
+    if (result.ok) await useLabStore.getState().refresh();
+  }
+
+  async function retry() {
+    if (!prior) return;
+    const result = await action.run(() => retryLabRun(prior.id));
+    if (result.ok) {
+      registerRun({ run_id: result.value.id, task_id: task.id, status: result.value.status });
     }
   }
 
@@ -235,7 +383,10 @@ function TaskInspector({ task }: { task: ResearchTask }) {
     <aside className="lab-inspector">
       <header className="lab-inspector-header">
         <span>WORK PACKAGE</span>
-        <StatusBadge status={live?.status ?? task.status} />
+        <div className="lab-inline-actions">
+          <Button variant="ghost" onClick={() => setEditOpen(true)} disabled={isRunning}>Edit</Button>
+          <StatusBadge status={live?.status ?? task.status} />
+        </div>
       </header>
       <div className="lab-inspector-scroll">
         <div className="lab-task-owner">
@@ -259,6 +410,29 @@ function TaskInspector({ task }: { task: ResearchTask }) {
           <h3>Expected output</h3>
           <p>{task.expected_output || "Clear research memo with uncertainties and next steps."}</p>
         </section>
+        <section className="lab-inspector-section">
+          <h3>Prerequisites</h3>
+          {readiness?.dependencies.map((dependency) => (
+            <div className="lab-inline-actions" key={dependency.dependency_id}>
+              <StatusBadge status={dependency.status} />
+              <span>{dependency.title}</span>
+              <Button
+                variant="ghost"
+                onClick={() => void removeDependency(dependency.dependency_id)}
+                disabled={action.pending || isRunning}
+              >Remove</Button>
+            </div>
+          ))}
+          {readiness?.dependencies.length === 0 && <p>No prerequisites.</p>}
+          {readiness?.ready && <p className="lab-success-note"><Icon name="check" size={14} /> Ready to run</p>}
+          <div className="lab-inline-actions">
+            <select aria-label="Dependency task" value={dependencyId} onChange={(event) => setDependencyId(event.target.value)}>
+              <option value="">Add prerequisite…</option>
+              {candidates.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}
+            </select>
+            <Button variant="ghost" disabled={!dependencyId} onClick={() => void addDependency()}>Add</Button>
+          </div>
+        </section>
         <UnverifiedNotice compact />
         <Field label="Run guidance" hint="Optional direction for this run only.">
           <textarea
@@ -269,7 +443,7 @@ function TaskInspector({ task }: { task: ResearchTask }) {
             placeholder="Emphasize counter-evidence…"
           />
         </Field>
-        {error && <p className="lab-inline-error">{error}</p>}
+        {action.error && <p className="lab-inline-error" role="alert">{action.error}</p>}
         {live?.status === "failed" && live.error && (
           <p className="lab-inline-error">Run failed: {live.error}</p>
         )}
@@ -290,15 +464,31 @@ function TaskInspector({ task }: { task: ResearchTask }) {
         )}
       </div>
       <footer className="lab-inspector-footer">
-        <Button
+        {isRunning ? <Button
+          variant="danger"
+          onClick={() => void cancel()}
+          disabled={action.pending}
+        >Cancel run</Button> : prior && task.status !== "completed" ? <Button
+          onClick={() => void retry()}
+          disabled={action.pending}
+        >Retry attempt</Button> : <Button
           variant="primary"
           icon="play"
           onClick={() => void run()}
-          disabled={starting || task.status === "running" || isRunning}
+          disabled={action.pending || task.status === "running" || isRunning || readiness?.ready === false}
         >
-          {starting ? "Starting…" : task.status === "completed" ? "Run again" : "Run research"}
-        </Button>
+          {action.pending ? "Starting…" : task.status === "completed" ? "Run again" : "Run research"}
+        </Button>}
       </footer>
+      {editOpen && (
+        <Modal
+          title="Edit research task"
+          description="Update the work package or lifecycle. Running tasks remain locked until they finish or are cancelled."
+          onClose={() => setEditOpen(false)}
+        >
+          <TaskEditForm task={task} onClose={() => setEditOpen(false)} />
+        </Modal>
+      )}
     </aside>
   );
 }
@@ -315,7 +505,7 @@ export default function ResearchView() {
   const selectedProjectId = useLabStore((state) => state.selectedProjectId);
   const selectedTaskId = useLabStore((state) => state.selectedTaskId);
   const selectTask = useLabStore((state) => state.selectTask);
-  const [modal, setModal] = useState<"project" | "task" | null>(null);
+  const [modal, setModal] = useState<"project" | "edit-project" | "task" | null>(null);
   const project = snapshot.projects.find((item) => item.id === selectedProjectId)
     ?? snapshot.projects[0]
     ?? null;
@@ -339,6 +529,7 @@ export default function ResearchView() {
             </p>
           </div>
           <div className="lab-header-actions">
+            {project && <Button onClick={() => setModal("edit-project")}>Edit project</Button>}
             <Button onClick={() => setModal("project")} icon="research">New project</Button>
             <Button
               variant="primary"
@@ -428,6 +619,15 @@ export default function ResearchView() {
           onClose={() => setModal(null)}
         >
           <ProjectForm onClose={() => setModal(null)} />
+        </Modal>
+      )}
+      {modal === "edit-project" && project && (
+        <Modal
+          title="Edit research project"
+          description="Update its scope or lifecycle without deleting its history."
+          onClose={() => setModal(null)}
+        >
+          <ProjectEditForm project={project} onClose={() => setModal(null)} />
         </Modal>
       )}
       {modal === "task" && project && (

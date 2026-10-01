@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import runpy
 import stat
@@ -26,6 +27,7 @@ SHELL_SCRIPTS = (
     LINUX_ROOT / "build-deb.sh",
     LINUX_ROOT / "install.sh",
     LINUX_ROOT / "uninstall.sh",
+    LINUX_ROOT / "verify-release.sh",
     LINUX_ROOT / "runtime" / "lemma",
     LINUX_ROOT / "runtime" / "lemma-server",
     LINUX_ROOT / "runtime" / "lemma-doctor",
@@ -59,6 +61,108 @@ def test_linux_templates_retain_their_render_markers() -> None:
     service = (LINUX_ROOT / "assets" / "lemma.service.in").read_text()
     assert "@LAUNCHER@" in desktop
     assert "@INSTALL_ROOT@" in service
+
+
+def test_release_sbom_is_deterministic_and_lock_derived(tmp_path: Path) -> None:
+    """Inventory both dependency ecosystems without network or time-dependent data."""
+    package_lock = tmp_path / "package-lock.json"
+    requirements = tmp_path / "requirements.txt"
+    first_output = tmp_path / "first.cdx.json"
+    second_output = tmp_path / "second.cdx.json"
+    package_lock.write_text(
+        json.dumps(
+            {
+                "lockfileVersion": 3,
+                "packages": {
+                    "": {"name": "lemma-frontend", "version": "0.2.0"},
+                    "node_modules/@example/widget": {
+                        "version": "1.2.3",
+                        "license": "MIT",
+                        "integrity": "sha256-YWJj",
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    requirements.write_text(
+        "Example_Python==4.5.6 \\\n"
+        "    --hash=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
+        "    # via lemma-backend\n",
+        encoding="utf-8",
+    )
+
+    command = [
+        sys.executable,
+        "-I",
+        "-B",
+        str(LINUX_ROOT / "sbom.py"),
+        "create",
+        "--package-lock",
+        str(package_lock),
+        "--requirements",
+        str(requirements),
+        "--application-version",
+        "0.2.0",
+    ]
+    subprocess.run(command + ["--output", str(first_output)], check=True)
+    subprocess.run(command + ["--output", str(second_output)], check=True)
+    assert first_output.read_bytes() == second_output.read_bytes()
+
+    document = json.loads(first_output.read_text(encoding="utf-8"))
+    assert document["bomFormat"] == "CycloneDX"
+    assert document["specVersion"] == "1.5"
+    assert [component["purl"] for component in document["components"]] == [
+        "pkg:npm/%40example/widget@1.2.3",
+        "pkg:pypi/example-python@4.5.6",
+    ]
+    assert "timestamp" not in document["metadata"]
+    subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-B",
+            str(LINUX_ROOT / "sbom.py"),
+            "validate",
+            str(first_output),
+            "--application-version",
+            "0.2.0",
+        ],
+        check=True,
+    )
+
+
+def test_release_signing_is_explicit_and_optional() -> None:
+    """Keep key use opt-in and expose verification consistently at each boundary."""
+    build_help = subprocess.run(
+        [str(LINUX_ROOT / "build.sh"), "--help"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    deb_help = subprocess.run(
+        [str(LINUX_ROOT / "build-deb.sh"), "--help"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    install_help = subprocess.run(
+        [str(LINUX_ROOT / "install.sh"), "--help"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    verify_help = subprocess.run(
+        [str(LINUX_ROOT / "verify-release.sh"), "--help"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert "--minisign-secret-key" in build_help
+    assert "--minisign-public-key" in deb_help
+    assert "--minisign-secret-key" in deb_help
+    assert "--minisign-public-key" in install_help
+    assert "--public-key" in verify_help
 
 
 def test_packaged_frontend_trusts_only_advertised_loopback_hosts() -> None:
@@ -112,6 +216,57 @@ def _fixture_bundle(bundle: Path) -> None:
         _write(bundle, f"bin/{command_name}", "#!/usr/bin/env bash\nexit 0\n", 0o755)
     _write(bundle, "libexec/backend_runner.py", "# fixture\n")
     _write(bundle, "libexec/frontend_server.py", "# fixture\n")
+    _write(bundle, "verify-release.sh", (LINUX_ROOT / "verify-release.sh").read_text(), 0o755)
+    _write(
+        bundle,
+        "share/lemma/app/linux_install/sbom.py",
+        (LINUX_ROOT / "sbom.py").read_text(),
+    )
+    fixture_components = [
+        {
+            "type": "library",
+            "bom-ref": "pkg:npm/example-js@1.0.0",
+            "name": "example-js",
+            "version": "1.0.0",
+            "purl": "pkg:npm/example-js@1.0.0",
+            "properties": [{"name": "lemma:ecosystem", "value": "javascript"}],
+        },
+        {
+            "type": "library",
+            "bom-ref": "pkg:pypi/example-python@1.0.0",
+            "name": "example-python",
+            "version": "1.0.0",
+            "purl": "pkg:pypi/example-python@1.0.0",
+            "properties": [{"name": "lemma:ecosystem", "value": "python"}],
+        },
+    ]
+    root_reference = "pkg:generic/lemma@0.2.0"
+    fixture_sbom = {
+        "bomFormat": "CycloneDX",
+        "specVersion": "1.5",
+        "version": 1,
+        "metadata": {
+            "component": {
+                "type": "application",
+                "bom-ref": root_reference,
+                "name": "lemma",
+                "version": "0.2.0",
+                "purl": root_reference,
+            }
+        },
+        "components": fixture_components,
+        "dependencies": [
+            {
+                "ref": root_reference,
+                "dependsOn": [component["bom-ref"] for component in fixture_components],
+            }
+        ],
+    }
+    _write(
+        bundle,
+        "share/doc/lemma-linux/SBOM.cdx.json",
+        json.dumps(fixture_sbom, indent=2, sort_keys=True) + "\n",
+    )
     _write(bundle, "share/doc/lemma-linux/THIRD_PARTY_NOTICES.md", "# Notices\n")
     _write(bundle, "share/lemma/env.default", "MOCK_LLM=true\n", 0o600)
     _write(bundle, "share/lemma/web/index.html", '<div id="root"></div>\n')
@@ -139,7 +294,7 @@ def _write_manifest(bundle: Path) -> None:
     """Regenerate the complete fixture manifest after an upgrade edit."""
     entries: list[str] = []
     for path in sorted(item for item in bundle.rglob("*") if item.is_file()):
-        if path.name == "manifest.sha256":
+        if path.name in {"manifest.sha256", "manifest.sha256.minisig"}:
             continue
         digest = hashlib.sha256(path.read_bytes()).hexdigest()
         entries.append(f"{digest}  ./{path.relative_to(bundle)}")

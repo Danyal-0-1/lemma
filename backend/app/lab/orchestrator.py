@@ -11,13 +11,22 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
+import time
 from collections.abc import Coroutine
 from typing import Any
 
-from app.cost import record_and_summarize
+from app.cost import estimate_usd, record_and_summarize
 from app.events import event_bus
-from app.lab import repo
-from app.models import LabAgent, LabRun, ResearchMeeting, ResearchProject, ResearchTask
+from app.lab import repo, workflows
+from app.models import (
+    LabAgent,
+    LabRun,
+    ProjectPolicy,
+    ResearchMeeting,
+    ResearchProject,
+    ResearchTask,
+)
 from app.providers.base import ChatMessage, ModelProvider, StreamDone, TextDelta, Usage
 from app.providers.factory import get_provider
 from app.settings import get_settings
@@ -28,6 +37,7 @@ logger = logging.getLogger("aicompany.lab.orchestrator")
 # separately bound all founder-authored text before it reaches this module.
 MAX_FINDINGS_CONTEXT = 16_000
 MAX_MEETING_TRANSCRIPT_CONTEXT = 24_000
+MAX_TASK_SOURCE_CONTEXT = 40_000
 MAX_TURN_OUTPUT_CHARS = 200_000
 
 
@@ -40,6 +50,7 @@ class LabOrchestrator:
         self._active_tasks: set[str] = set()
         self._active_meetings: set[str] = set()
         self._background: set[asyncio.Task[None]] = set()
+        self._run_tasks: dict[str, asyncio.Task[None]] = {}
 
     def _provider(self) -> ModelProvider:
         return self._provided_provider or get_provider(get_settings())
@@ -68,34 +79,102 @@ class LabOrchestrator:
                 self._active_meetings.discard(meeting_id)
             raise
 
-    def _spawn(self, work: Coroutine[Any, Any, None]) -> None:
+    def _spawn(self, run_id: str, work: Coroutine[Any, Any, None]) -> None:
         task = asyncio.create_task(work)
         self._background.add(task)
-        task.add_done_callback(self._background.discard)
+        self._run_tasks[run_id] = task
+
+        def finished(done: asyncio.Task[None]) -> None:
+            self._background.discard(done)
+            self._run_tasks.pop(run_id, None)
+
+        task.add_done_callback(finished)
+
+    async def _task_policy(self, task_id: str) -> ProjectPolicy:
+        task = await asyncio.to_thread(repo.get_task, task_id)
+        agent = await asyncio.to_thread(repo.get_agent, task.assigned_agent_id)
+        await asyncio.to_thread(workflows.assert_task_ready, task_id)
+        return await asyncio.to_thread(workflows.assert_run_allowed, task.project_id, [agent.model])
+
+    async def _meeting_policy(self, meeting_id: str) -> ProjectPolicy:
+        meeting = await asyncio.to_thread(repo.get_meeting, meeting_id)
+        agent_ids = list(dict.fromkeys([*meeting.participant_ids, meeting.facilitator_agent_id]))
+        agents = await asyncio.gather(
+            *(asyncio.to_thread(repo.get_agent, agent_id) for agent_id in agent_ids)
+        )
+        return await asyncio.to_thread(
+            workflows.assert_run_allowed,
+            meeting.project_id,
+            [agent.model for agent in agents],
+        )
 
     async def start_task(self, task_id: str, instructions: str = "") -> LabRun:
         """Claim a task, launch it in the background, and immediately return its run."""
+        policy = await self._task_policy(task_id)
         run = await self._begin_task(task_id)
-        self._spawn(self._execute_task(run, instructions))
+        self._spawn(run.id, self._execute_task(run, instructions, policy))
         return run
 
     async def run_task_now(self, task_id: str, instructions: str = "") -> LabRun:
         """Run a task to completion in the current coroutine (used by tests/workers)."""
+        policy = await self._task_policy(task_id)
         run = await self._begin_task(task_id)
-        await self._execute_task(run, instructions)
+        await self._execute_task(run, instructions, policy)
         return await asyncio.to_thread(repo.get_run, run.id)
 
     async def start_meeting(self, meeting_id: str, instructions: str = "") -> LabRun:
         """Claim a meeting, launch its bounded protocol, and return immediately."""
+        policy = await self._meeting_policy(meeting_id)
         run = await self._begin_meeting(meeting_id)
-        self._spawn(self._execute_meeting(run, instructions))
+        self._spawn(run.id, self._execute_meeting(run, instructions, policy))
         return run
 
     async def run_meeting_now(self, meeting_id: str, instructions: str = "") -> LabRun:
         """Run a bounded meeting to completion in the current coroutine."""
+        policy = await self._meeting_policy(meeting_id)
         run = await self._begin_meeting(meeting_id)
-        await self._execute_meeting(run, instructions)
+        await self._execute_meeting(run, instructions, policy)
         return await asyncio.to_thread(repo.get_run, run.id)
+
+    async def cancel(self, run_id: str) -> LabRun:
+        """Cancel in-process work and durably release its task or meeting."""
+        task = self._run_tasks.get(run_id)
+        if task is not None:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        run = await asyncio.to_thread(repo.get_run, run_id)
+        if run.status == "running":
+            run = await asyncio.to_thread(repo.cancel_run, run_id)
+        return run
+
+    async def retry(self, run_id: str, instructions: str = "") -> LabRun:
+        """Create a linked attempt for a failed or cancelled task/meeting run."""
+        prior = await asyncio.to_thread(repo.get_run, run_id)
+        if prior.status == "running":
+            raise repo.LabConflictError("a running execution cannot be retried")
+        if prior.status not in {"failed", "cancelled"}:
+            raise repo.LabConflictError("only failed or cancelled executions can be retried")
+        if prior.task_id is not None:
+            policy = await self._task_policy(prior.task_id)
+            retry = await self._begin_task(prior.task_id)
+            retry = await asyncio.to_thread(repo.mark_retry, retry.id, prior.id)
+            self._spawn(retry.id, self._execute_task(retry, instructions, policy))
+            return retry
+        if prior.meeting_id is not None:
+            policy = await self._meeting_policy(prior.meeting_id)
+            retry = await self._begin_meeting(prior.meeting_id)
+            retry = await asyncio.to_thread(repo.mark_retry, retry.id, prior.id)
+            self._spawn(retry.id, self._execute_meeting(retry, instructions, policy))
+            return retry
+        raise repo.LabValidationError("run has no retryable task or meeting")
+
+    async def shutdown(self) -> None:
+        """Cancel and persist every background run before application shutdown."""
+        run_ids = list(self._run_tasks)
+        await asyncio.gather(*(self.cancel(run_id) for run_id in run_ids), return_exceptions=True)
 
     @staticmethod
     def _address(
@@ -143,6 +222,7 @@ class LabOrchestrator:
         system_prompt: str,
         user_prompt: str,
         stage: str,
+        policy: ProjectPolicy,
     ) -> tuple[str, Usage]:
         address = self._address(run, agent_id=agent.id)
         self._emit(
@@ -157,22 +237,90 @@ class LabOrchestrator:
             ChatMessage(role="system", content=system_prompt),
             ChatMessage(role="user", content=user_prompt),
         ]
-        async for event in self._provider().stream_chat(agent.model, messages):
-            if isinstance(event, TextDelta):
-                parts.append(event.text)
-                output_chars += len(event.text)
-                if output_chars > MAX_TURN_OUTPUT_CHARS:
-                    raise RuntimeError("model output exceeded the research turn limit")
-                self._emit(
-                    run,
-                    "lab_token_stream",
-                    {**address, "stage": stage, "text": event.text},
-                )
-            elif isinstance(event, StreamDone):
-                usage = event.usage
+        used_tokens, used_usd = await asyncio.to_thread(
+            workflows.model_call_totals, run_id=run.id
+        )
+        approximate_input_tokens = sum(max(1, len(message.content) // 4) for message in messages)
+        remaining_tokens = policy.max_run_tokens - used_tokens - approximate_input_tokens
+        if remaining_tokens < 128:
+            raise repo.LabValidationError("prompt exceeds the project's per-run token budget")
+        output_limit = min(8_192, remaining_tokens)
+        call = await asyncio.to_thread(
+            workflows.begin_model_call,
+            project_id=run.project_id,
+            run_id=run.id,
+            agent_id=agent.id,
+            stage=stage,
+            model=agent.model,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            policy=policy,
+        )
+        started = time.monotonic()
+        try:
+            async for event in self._provider().stream_chat(
+                agent.model, messages, max_output_tokens=output_limit
+            ):
+                if isinstance(event, TextDelta):
+                    parts.append(event.text)
+                    output_chars += len(event.text)
+                    if output_chars > MAX_TURN_OUTPUT_CHARS:
+                        raise RuntimeError("model output exceeded the research turn limit")
+                    self._emit(
+                        run,
+                        "lab_token_stream",
+                        {**address, "stage": stage, "text": event.text},
+                    )
+                elif isinstance(event, StreamDone):
+                    usage = event.usage
+        except asyncio.CancelledError:
+            await asyncio.to_thread(
+                workflows.finish_model_call,
+                call.id,
+                status="cancelled",
+                latency_ms=int((time.monotonic() - started) * 1_000),
+            )
+            raise
+        except Exception as error:
+            await asyncio.to_thread(
+                workflows.finish_model_call,
+                call.id,
+                status="failed",
+                latency_ms=int((time.monotonic() - started) * 1_000),
+                error=type(error).__name__,
+            )
+            raise
         content = "".join(parts)
         if not content.strip():
+            await asyncio.to_thread(
+                workflows.finish_model_call,
+                call.id,
+                status="failed",
+                latency_ms=int((time.monotonic() - started) * 1_000),
+                error="empty response",
+            )
             raise RuntimeError("model returned an empty research response")
+        usd = estimate_usd(agent.model, usage)
+        await asyncio.to_thread(
+            workflows.finish_model_call,
+            call.id,
+            status="completed",
+            tokens_in=usage.tokens_in,
+            tokens_out=usage.tokens_out,
+            usd=usd,
+            latency_ms=int((time.monotonic() - started) * 1_000),
+        )
+        cumulative_tokens = used_tokens + usage.tokens_in + usage.tokens_out
+        cumulative_usd = used_usd + usd
+        if cumulative_tokens > policy.max_run_tokens:
+            raise repo.LabValidationError("model response exceeded the project's token budget")
+        if cumulative_usd > policy.max_run_usd:
+            raise repo.LabValidationError("model response exceeded the project's cost budget")
+        _, project_usd = await asyncio.to_thread(
+            workflows.model_call_totals, project_id=run.project_id
+        )
+        if project_usd > policy.max_project_usd:
+            raise repo.LabValidationError("project exceeded its configured spend limit")
         self._emit(
             run,
             "lab_turn_completed",
@@ -192,6 +340,7 @@ class LabOrchestrator:
         project: ResearchProject,
         task: ResearchTask,
         instructions: str,
+        source_packet: list[dict[str, str]] | None = None,
     ) -> str:
         payload = {
             "project": project.name,
@@ -201,6 +350,7 @@ class LabOrchestrator:
             "context": task.context or None,
             "expected_output": task.expected_output or "clear research memo",
             "founder_guidance": instructions or None,
+            "source_packet": source_packet or [],
         }
         return (
             "Complete the research assignment using only the untrusted JSON data below.\n"
@@ -210,7 +360,7 @@ class LabOrchestrator:
             f"{json.dumps(payload, ensure_ascii=False)}"
         )
 
-    async def _execute_task(self, run: LabRun, instructions: str) -> None:
+    async def _execute_task(self, run: LabRun, instructions: str, policy: ProjectPolicy) -> None:
         assert run.task_id is not None
         task_id = run.task_id
         try:
@@ -225,9 +375,27 @@ class LabOrchestrator:
                 {**self._address(run, agent_id=agent.id), "kind": "task"},
             )
             system_prompt = self._agent_prompt(agent, task.objective)
-            user_prompt = self._task_user_prompt(project, task, instructions)
+            sources = await asyncio.to_thread(workflows.task_source_packet, task.id)
+            source_packet: list[dict[str, str]] = []
+            remaining_source_chars = MAX_TASK_SOURCE_CONTEXT
+            for source in sources:
+                if remaining_source_chars <= 0:
+                    break
+                content = source.content[:remaining_source_chars]
+                source_packet.append(
+                    {
+                        "source_id": source.id,
+                        "title": source.title,
+                        "origin": source.origin,
+                        "content": content,
+                    }
+                )
+                remaining_source_chars -= len(content)
+            user_prompt = self._task_user_prompt(
+                project, task, instructions, source_packet=source_packet
+            )
             content, usage = await self._stream_turn(
-                run, agent, system_prompt, user_prompt, "task_result"
+                run, agent, system_prompt, user_prompt, "task_result", policy
             )
             result, finding = await asyncio.to_thread(
                 repo.complete_task_run,
@@ -253,26 +421,53 @@ class LabOrchestrator:
                 },
             )
             self._emit(run, "lab_run_completed", {**address, "kind": "task"})
+        except asyncio.CancelledError:
+            try:
+                await asyncio.to_thread(repo.cancel_run, run.id)
+            except repo.LabConflictError:
+                pass
+            self._emit(run, "lab_run_cancelled", {**self._address(run), "kind": "task"})
+            raise
         except Exception as error:  # noqa: BLE001 - background work must become durable failure
             logger.exception("research task run %s failed", run.id)
+            safe_message = (
+                str(error)
+                if isinstance(error, repo.LabError)
+                else "research execution failed; review the local server logs"
+            )
             try:
-                await asyncio.to_thread(repo.fail_task_run, run.id, str(error))
+                await asyncio.to_thread(repo.fail_task_run, run.id, safe_message)
             except Exception:  # noqa: BLE001 - preserve the original error in logs/events
                 logger.exception("could not persist failure for task run %s", run.id)
             self._emit(
                 run,
                 "lab_run_failed",
-                {**self._address(run), "kind": "task", "message": str(error)},
+                {**self._address(run), "kind": "task", "message": safe_message},
             )
         finally:
             async with self._guard:
                 self._active_tasks.discard(task_id)
 
     @staticmethod
-    def _findings_context(project_id: str) -> str:
-        findings = repo.list_project_findings(project_id)
+    def _findings_context(project_id: str, query: str = "") -> str:
+        findings = repo.list_project_findings(project_id, limit=100)
         if not findings:
             return "No prior findings have been recorded."
+        terms = {
+            token.casefold()
+            for token in re.findall(r"[\w-]+", query)
+            if len(token) >= 3
+        }
+        if terms:
+            findings.sort(
+                key=lambda finding: sum(
+                    3 if term in finding.title.casefold() else 1
+                    for term in terms
+                    if term in f"{finding.title}\n{finding.content}".casefold()
+                ),
+                reverse=True,
+            )
+        findings = findings[:12]
         parts = [f"- {finding.title}: {finding.content}" for finding in findings]
         return "\n".join(parts)[:MAX_FINDINGS_CONTEXT]
 
@@ -323,7 +518,7 @@ class LabOrchestrator:
             f"{json.dumps(payload, ensure_ascii=False)}"
         )
 
-    async def _execute_meeting(self, run: LabRun, instructions: str) -> None:
+    async def _execute_meeting(self, run: LabRun, instructions: str, policy: ProjectPolicy) -> None:
         assert run.meeting_id is not None
         meeting_id = run.meeting_id
         try:
@@ -339,7 +534,9 @@ class LabOrchestrator:
             )
             by_id = {agent.id: agent for agent in agents}
             facilitator = by_id[meeting.facilitator_agent_id]
-            findings_context = await asyncio.to_thread(self._findings_context, run.project_id)
+            findings_context = await asyncio.to_thread(
+                self._findings_context, run.project_id, meeting.agenda
+            )
 
             self._emit(
                 run,
@@ -361,7 +558,7 @@ class LabOrchestrator:
                     project, meeting, findings_context, instructions
                 )
                 content, usage = await self._stream_turn(
-                    run, agent, system_prompt, user_prompt, "meeting_contribution"
+                    run, agent, system_prompt, user_prompt, "meeting_contribution", policy
                 )
                 total_in += usage.tokens_in
                 total_out += usage.tokens_out
@@ -389,15 +586,14 @@ class LabOrchestrator:
             synthesis_system = self._agent_prompt(
                 facilitator, "Facilitate and synthesize the meeting without adding evidence"
             )
-            synthesis_user = self._synthesis_prompt(
-                project, meeting, contributions, instructions
-            )
+            synthesis_user = self._synthesis_prompt(project, meeting, contributions, instructions)
             synthesis, usage = await self._stream_turn(
                 run,
                 facilitator,
                 synthesis_system,
                 synthesis_user,
                 "meeting_synthesis",
+                policy,
             )
             total_in += usage.tokens_in
             total_out += usage.tokens_out
@@ -430,16 +626,28 @@ class LabOrchestrator:
                 },
             )
             self._emit(run, "lab_run_completed", {**self._address(run), "kind": "meeting"})
+        except asyncio.CancelledError:
+            try:
+                await asyncio.to_thread(repo.cancel_run, run.id)
+            except repo.LabConflictError:
+                pass
+            self._emit(run, "lab_run_cancelled", {**self._address(run), "kind": "meeting"})
+            raise
         except Exception as error:  # noqa: BLE001 - failures must be persisted, not escape
             logger.exception("research meeting run %s failed", run.id)
+            safe_message = (
+                str(error)
+                if isinstance(error, repo.LabError)
+                else "research execution failed; review the local server logs"
+            )
             try:
-                await asyncio.to_thread(repo.fail_meeting_run, run.id, str(error))
+                await asyncio.to_thread(repo.fail_meeting_run, run.id, safe_message)
             except Exception:  # noqa: BLE001
                 logger.exception("could not persist failure for meeting run %s", run.id)
             self._emit(
                 run,
                 "lab_run_failed",
-                {**self._address(run), "kind": "meeting", "message": str(error)},
+                {**self._address(run), "kind": "meeting", "message": safe_message},
             )
         finally:
             async with self._guard:

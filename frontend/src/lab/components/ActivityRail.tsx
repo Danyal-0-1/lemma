@@ -5,7 +5,16 @@ import { useLabStore } from "../store";
 import type { LabView, ResearchView } from "../types";
 import { Icon, type IconName } from "./Icons";
 
-const RESEARCH_VIEWS: ResearchView[] = ["hq", "organization", "research", "meetings", "security"];
+const RESEARCH_VIEWS: ResearchView[] = [
+  "hq",
+  "organization",
+  "research",
+  "knowledge",
+  "evaluations",
+  "meetings",
+  "operations",
+  "security",
+];
 const ITEMS: { id: LabView; label: string; icon: IconName }[] = [
   { id: "explorer", label: "Explorer", icon: "explorer" },
   { id: "search", label: "Search", icon: "search" },
