@@ -176,7 +176,7 @@ def test_0002_upgrades_populated_baseline_run_without_data_loss(tmp_path: Path) 
     engine.dispose()
 
     assert result.previous_revisions == ("0001_current_schema",)
-    assert result.current_revisions == ("0002_research_workflows",)
+    assert result.current_revisions == ("0004_research_assurance_hardening",)
     assert result.backup is not None
     assert run == (1, None, 34)
     assert {
@@ -185,4 +185,42 @@ def test_0002_upgrades_populated_baseline_run_without_data_loss(tmp_path: Path) 
         "lab_model_calls",
         "lab_evaluation_experiments",
         "lab_automation_runs",
+        "lab_research_protocols",
+        "lab_research_assurance_acceptances",
     } <= new_tables
+
+
+def test_0004_repairs_early_0003_assurance_shape(tmp_path: Path) -> None:
+    database = tmp_path / "early-0003.db"
+    engine = create_engine(f"sqlite:///{database}")
+    config = alembic_config(database)
+    with engine.begin() as connection:
+        config.attributes["connection"] = connection
+        command.upgrade(config, "0003_research_assurance")
+        connection.exec_driver_sql("DROP INDEX ix_lab_runs_input_sha256")
+        connection.exec_driver_sql("ALTER TABLE lab_runs DROP COLUMN input_sha256")
+        connection.exec_driver_sql("ALTER TABLE lab_runs DROP COLUMN input_snapshot")
+        connection.exec_driver_sql(
+            "ALTER TABLE lab_research_assurance_acceptances DROP COLUMN snapshot_json"
+        )
+        connection.exec_driver_sql(
+            "ALTER TABLE lab_research_assurance_acceptances DROP COLUMN confirmed_criteria"
+        )
+
+    result = upgrade_database(engine, database)
+    with engine.connect() as connection:
+        run_columns = {
+            row[1] for row in connection.exec_driver_sql("PRAGMA table_info(lab_runs)")
+        }
+        acceptance_columns = {
+            row[1]
+            for row in connection.exec_driver_sql(
+                "PRAGMA table_info(lab_research_assurance_acceptances)"
+            )
+        }
+    engine.dispose()
+
+    assert result.previous_revisions == ("0003_research_assurance",)
+    assert result.current_revisions == ("0004_research_assurance_hardening",)
+    assert {"input_snapshot", "input_sha256"} <= run_columns
+    assert {"snapshot_json", "confirmed_criteria"} <= acceptance_columns

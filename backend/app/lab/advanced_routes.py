@@ -11,7 +11,7 @@ from pydantic import BaseModel, ValidationError
 from sqlmodel import SQLModel
 
 from app.config import get_config
-from app.lab import repo, search, workflows
+from app.lab import assurance, repo, research_capsule, search, workflows
 from app.lab.advanced_schemas import (
     ActionItemCreate,
     ActionItemUpdate,
@@ -19,12 +19,18 @@ from app.lab.advanced_schemas import (
     AutomationPlanCreate,
     ClaimCreate,
     ClaimEvidenceCreate,
+    ClaimUpdate,
     EvaluationCreate,
     EvaluationScoreCreate,
     FindingReviewCreate,
     MeetingOutcomeCreate,
     ProjectPolicyUpdate,
     PromoteActionRequest,
+    ResearchAssuranceAccept,
+    ResearchCapsuleEnvelope,
+    ResearchProtocolApproval,
+    ResearchProtocolCreate,
+    ResearchProtocolWithdrawal,
     SearchQuery,
     SourceCreate,
     SourceExcerptCreate,
@@ -36,6 +42,7 @@ from app.lab.advanced_schemas import (
 )
 from app.lab.automation import automation_runner
 from app.lab.evaluation import evaluation_runner
+from app.lab.integrity import canonical_json
 from app.lab.orchestrator import lab_orchestrator
 from app.lab.schemas import MeetingCreate, ProjectCreate, TaskCreate
 
@@ -47,6 +54,8 @@ def _translate(error: repo.LabError) -> HTTPException:
         return HTTPException(status_code=404, detail=str(error))
     if isinstance(error, repo.LabConflictError):
         return HTTPException(status_code=409, detail=str(error))
+    if isinstance(error, repo.LabPayloadTooLargeError):
+        return HTTPException(status_code=413, detail=str(error))
     return HTTPException(status_code=422, detail=str(error))
 
 
@@ -143,9 +152,65 @@ async def create_claim(request: ClaimCreate) -> dict[str, Any]:
     return _dump(await _call(workflows.create_claim, _values(request)))
 
 
+@router.patch("/claims/{claim_id}")
+async def update_claim(claim_id: str, request: ClaimUpdate) -> dict[str, Any]:
+    return _dump(await _call(workflows.update_claim, claim_id, _values(request)))
+
+
 @router.post("/claims/{claim_id}/evidence", status_code=status.HTTP_201_CREATED)
 async def attach_claim_evidence(claim_id: str, request: ClaimEvidenceCreate) -> dict[str, Any]:
     return _dump(await _call(workflows.attach_claim_evidence, claim_id, _values(request)))
+
+
+@router.delete("/claim-evidence/{evidence_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def unlink_claim_evidence(evidence_id: str) -> Response:
+    await _call(workflows.unlink_claim_evidence, evidence_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post("/projects/{project_id}/protocols", status_code=status.HTTP_201_CREATED)
+async def create_research_protocol(
+    project_id: str, request: ResearchProtocolCreate
+) -> dict[str, Any]:
+    return _dump(await _call(assurance.create_protocol, project_id, _values(request)))
+
+
+@router.get("/projects/{project_id}/protocols")
+async def list_research_protocols(project_id: str) -> list[dict[str, Any]]:
+    return [_dump(row) for row in await _call(assurance.list_protocols, project_id)]
+
+
+@router.post("/protocols/{protocol_id}/approve")
+async def approve_research_protocol(
+    protocol_id: str, request: ResearchProtocolApproval
+) -> dict[str, Any]:
+    return _dump(await _call(assurance.approve_protocol, protocol_id, request.approved_by))
+
+
+@router.post("/protocols/{protocol_id}/withdraw")
+async def withdraw_research_protocol(
+    protocol_id: str, request: ResearchProtocolWithdrawal
+) -> dict[str, Any]:
+    return _dump(
+        await _call(
+            assurance.withdraw_protocol,
+            protocol_id,
+            request.withdrawn_by,
+            request.note,
+        )
+    )
+
+
+@router.get("/tasks/{task_id}/assurance")
+async def get_task_assurance(task_id: str) -> dict[str, Any]:
+    return await _call(assurance.assess_task, task_id)
+
+
+@router.post("/tasks/{task_id}/accept", status_code=status.HTTP_201_CREATED)
+async def accept_task_research(
+    task_id: str, request: ResearchAssuranceAccept
+) -> dict[str, Any]:
+    return await _call(assurance.accept_task, task_id, _values(request))
 
 
 @router.post("/meetings/{meeting_id}/outcomes", status_code=status.HTTP_201_CREATED)
@@ -215,6 +280,25 @@ async def export_project_dossier(project_id: str) -> Response:
         media_type="text/markdown",
         headers={"Content-Disposition": f'attachment; filename="project-{project_id}.md"'},
     )
+
+
+@router.get("/projects/{project_id}/capsule")
+async def export_research_capsule(project_id: str) -> Response:
+    capsule = await _call(research_capsule.build_capsule, project_id)
+    return Response(
+        content=canonical_json(capsule),
+        media_type="application/json",
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="project-{project_id}.research-capsule.json"'
+            )
+        },
+    )
+
+
+@router.post("/capsules/verify")
+async def verify_research_capsule(request: ResearchCapsuleEnvelope) -> dict[str, Any]:
+    return await _call(research_capsule.verify_capsule, _values(request))
 
 
 @router.post("/templates", status_code=status.HTTP_201_CREATED)

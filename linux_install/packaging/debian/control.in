@@ -8,10 +8,10 @@ Maintainer: Lemma contributors <noreply@lemma.local>
 Homepage: https://github.com/Danyal-0-1/lemma
 Depends: bash (>= 4.3), ca-certificates, coreutils, git, @PYTHON_DEPENDS@, util-linux
 Recommends: hicolor-icon-theme, openssh-client, xdg-utils
-Description: Local-first R&D agent studio and Git workbench
- Lemma organizes research-agent teams, reviewed findings, and Git-tracked
- project workspaces in a browser-based interface that runs entirely on the
- local machine.
+Description: Local-first evidence-gated R&D agent studio
+ Lemma organizes research-agent teams, frozen research protocols, source-backed
+ claims, human acceptance gates, and Git-tracked project workspaces in a
+ browser-based interface that runs on the local machine.
  .
  The backend and frontend bind only to loopback. Provider credentials and
  mutable application data remain in private per-user XDG directories.

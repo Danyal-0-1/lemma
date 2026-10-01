@@ -37,6 +37,12 @@ else
   fail "Python $PYTHON_ABI is unavailable"
 fi
 
+if "$INSTALL_ROOT/bin/lemma" verify-capsule --help >/dev/null 2>&1; then
+  ok "offline research capsule verifier"
+else
+  fail "offline research capsule verifier is unavailable"
+fi
+
 for command_name in git flock sha256sum; do
   if command -v "$command_name" >/dev/null 2>&1; then
     ok "$command_name is available"

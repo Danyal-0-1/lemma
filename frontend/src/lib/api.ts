@@ -21,10 +21,13 @@ import type {
   LabTemplate,
   ProjectDossier,
   ProjectPolicy,
+  ResearchProtocol,
   ResearchClaim,
   ResearchTask,
   SourceDocument,
+  TaskAssurance,
   TraceLink,
+  CapsuleVerification,
 } from "../lab/types";
 import { normalizeLabSnapshot } from "../lab/types";
 
@@ -465,13 +468,15 @@ async function responseError(response: Response, fallback: string): Promise<Erro
 }
 
 async function labRequest<T>(path: string, init?: RequestInit): Promise<T> {
+  const isFormData = typeof FormData !== "undefined" && init?.body instanceof FormData;
   const response = await fetch(`${BACKEND_ORIGIN}/api/lab${path}`, {
     ...init,
-    headers: init?.body
+    headers: init?.body && !isFormData
       ? { "Content-Type": "application/json", ...(init.headers ?? {}) }
       : init?.headers,
   });
   if (!response.ok) throw await responseError(response, "R&D Studio request failed");
+  if (response.status === 204) return undefined as T;
   return (await response.json()) as T;
 }
 
@@ -572,6 +577,21 @@ export async function createSourceDocument(payload: {
   });
 }
 
+export async function importSourceDocument(
+  projectId: string,
+  document: File,
+  title = "",
+): Promise<SourceDocument> {
+  const form = new FormData();
+  form.append("project_id", projectId);
+  form.append("document", document, document.name);
+  if (title.trim()) form.append("title", title.trim());
+  return await labRequest("/sources/import-file", {
+    method: "POST",
+    body: form,
+  });
+}
+
 export async function archiveSourceDocument(sourceId: string): Promise<SourceDocument> {
   return await labRequest(`/sources/${encodeURIComponent(sourceId)}/archive`, {
     method: "POST",
@@ -637,6 +657,22 @@ export async function attachClaimEvidence(
   await labRequest(`/claims/${encodeURIComponent(claimId)}/evidence`, {
     method: "POST",
     body: JSON.stringify({ excerpt_id: excerptId, stance, note }),
+  });
+}
+
+export async function updateResearchClaimStatus(
+  claimId: string,
+  status: "proposed" | "accepted" | "disputed" | "retired",
+): Promise<ResearchClaim> {
+  return await labRequest(`/claims/${encodeURIComponent(claimId)}`, {
+    method: "PATCH",
+    body: JSON.stringify({ status }),
+  });
+}
+
+export async function removeClaimEvidence(evidenceId: string): Promise<void> {
+  await labRequest(`/claim-evidence/${encodeURIComponent(evidenceId)}`, {
+    method: "DELETE",
   });
 }
 
@@ -709,6 +745,86 @@ export async function getTaskReadiness(taskId: string): Promise<{
   }>;
 }> {
   return await labRequest(`/tasks/${encodeURIComponent(taskId)}/readiness`);
+}
+
+// --- Research assurance ----------------------------------------------------
+
+export async function listResearchProtocols(projectId: string): Promise<ResearchProtocol[]> {
+  return await labRequest(`/projects/${encodeURIComponent(projectId)}/protocols`);
+}
+
+export async function createResearchProtocol(
+  projectId: string,
+  payload: Pick<
+    ResearchProtocol,
+    "question" | "hypothesis" | "method" | "acceptance_criteria" | "limitations"
+  > & { created_by?: string },
+): Promise<ResearchProtocol> {
+  return await labRequest(`/projects/${encodeURIComponent(projectId)}/protocols`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function approveResearchProtocol(
+  protocolId: string,
+  approvedBy = "founder",
+): Promise<ResearchProtocol> {
+  return await labRequest(`/protocols/${encodeURIComponent(protocolId)}/approve`, {
+    method: "POST",
+    body: JSON.stringify({ approved_by: approvedBy }),
+  });
+}
+
+export async function withdrawResearchProtocol(
+  protocolId: string,
+  note = "Withdrawn during protocol review.",
+  withdrawnBy = "founder",
+): Promise<ResearchProtocol> {
+  return await labRequest(`/protocols/${encodeURIComponent(protocolId)}/withdraw`, {
+    method: "POST",
+    body: JSON.stringify({ withdrawn_by: withdrawnBy, note }),
+  });
+}
+
+export async function getTaskAssurance(taskId: string): Promise<TaskAssurance> {
+  return await labRequest(`/tasks/${encodeURIComponent(taskId)}/assurance`);
+}
+
+export async function acceptAssuredTask(
+  taskId: string,
+  confirmedCriteria: string[],
+  notes = "",
+): Promise<TaskAssurance> {
+  return await labRequest(`/tasks/${encodeURIComponent(taskId)}/accept`, {
+    method: "POST",
+    body: JSON.stringify({
+      reviewer: "founder",
+      notes,
+      confirmed_criteria: confirmedCriteria,
+    }),
+  });
+}
+
+export async function downloadResearchCapsule(projectId: string): Promise<void> {
+  const response = await fetch(
+    `${BACKEND_ORIGIN}/api/lab/projects/${encodeURIComponent(projectId)}/capsule`,
+  );
+  if (!response.ok) throw await responseError(response, "research capsule export failed");
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = `project-${projectId}-research-capsule.json`;
+  anchor.click();
+  URL.revokeObjectURL(url);
+}
+
+export async function verifyResearchCapsule(capsule: unknown): Promise<CapsuleVerification> {
+  return await labRequest("/capsules/verify", {
+    method: "POST",
+    body: JSON.stringify(capsule),
+  });
 }
 
 export async function addTaskDependency(

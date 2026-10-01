@@ -187,6 +187,68 @@ export interface ResearchClaim {
   created_at: string;
 }
 
+export interface ResearchProtocol {
+  id: string;
+  project_id: string;
+  version: number;
+  status: "draft" | "approved" | "superseded" | "withdrawn" | string;
+  question: string;
+  hypothesis: string;
+  method: string;
+  acceptance_criteria: string[];
+  limitations: string[];
+  project_objective: string;
+  content_sha256: string;
+  approved_at: string | null;
+  approved_by: string | null;
+  supersedes_id: string | null;
+  created_by: string;
+  created_at: string;
+}
+
+export interface AssuranceCheck {
+  code: string;
+  passed: boolean;
+  message: string;
+}
+
+export interface TaskAssurance {
+  task_id: string;
+  project_id: string;
+  run_id: string | null;
+  status: "blocked" | "ready" | "accepted" | "stale" | string;
+  ready: boolean;
+  snapshot_sha256: string;
+  protocol: ResearchProtocol | null;
+  latest_protocol: ResearchProtocol | null;
+  coverage: {
+    total_claims: number;
+    supported_claims: number;
+    unsupported_claims: number;
+    contradicted_claims: number;
+    coverage_percent: number;
+    unique_supporting_sources: number;
+    source_packet_count: number;
+    source_packet_candidate_count: number;
+    source_packet_link_count: number;
+    invalid_source_packet_refs: Array<{ link_id: string; reason: string }>;
+    excluded_source_packet_refs: Array<{ link_id: string; reason: string }>;
+    unlinked_supporting_source_ids: string[];
+  };
+  checks: AssuranceCheck[];
+  issues: string[];
+  claim_results: Array<Record<string, unknown>>;
+  acceptance: Record<string, unknown> | null;
+}
+
+export interface CapsuleVerification {
+  valid: boolean;
+  manifest_sha256: string | null;
+  computed_sha256: string | null;
+  checks: AssuranceCheck[];
+  errors: string[];
+}
+
 export interface ActionItem {
   id: string;
   project_id: string;

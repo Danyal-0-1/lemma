@@ -7,6 +7,7 @@ atomic even though model calls happen asynchronously elsewhere.
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Iterable
 from datetime import UTC, datetime
 from typing import Any
@@ -14,6 +15,13 @@ from typing import Any
 from sqlmodel import Session, SQLModel, select
 
 from app.db import get_session
+from app.lab.integrity import (
+    MAX_TASK_SOURCE_CONTEXT,
+    MAX_TASK_SOURCE_COUNT,
+    canonical_sha256,
+    run_input_payload,
+    source_execution_payload,
+)
 from app.models import (
     ActivityRecord,
     Department,
@@ -23,8 +31,11 @@ from app.models import (
     MeetingMessage,
     ResearchMeeting,
     ResearchProject,
+    ResearchProtocol,
     ResearchTask,
+    SourceDocument,
     TaskResult,
+    TaskSourceLink,
 )
 
 
@@ -42,6 +53,10 @@ class LabConflictError(LabError):
 
 class LabValidationError(LabError):
     """Raised when references or communication policy violate domain rules."""
+
+
+class LabPayloadTooLargeError(LabError):
+    """Raised when a bounded local export cannot be safely produced."""
 
 
 def _now() -> datetime:
@@ -457,13 +472,13 @@ def recover_stale_runs() -> int:
         return len(stale)
 
 
-def begin_task_run(task_id: str) -> LabRun:
+def begin_task_run(task_id: str, instructions: str = "") -> LabRun:
     """Atomically mark a task running and create its durable run row."""
     with get_session() as db:
         task = _require(db, ResearchTask, task_id, "task")
         if task.status == "running":
             raise LabConflictError("task already has a running execution")
-        _ensure_project(db, task.project_id, active=True)
+        project = _ensure_project(db, task.project_id, active=True)
         agent = _ensure_agent(db, task.assigned_agent_id, active=True)
         _validate_assignment(db, task.department_id, agent)
         running = db.exec(
@@ -471,7 +486,53 @@ def begin_task_run(task_id: str) -> LabRun:
         ).first()
         if running is not None:
             raise LabConflictError("task already has a running execution")
-        run = LabRun(kind="task", project_id=task.project_id, task_id=task.id)
+        protocols = list(
+            db.exec(
+                select(ResearchProtocol)
+                .where(ResearchProtocol.project_id == task.project_id)
+                .order_by(ResearchProtocol.version.desc())
+            )
+        )
+        protocol = next((row for row in protocols if row.status == "approved"), None)
+        source_rows = list(
+            db.exec(
+                select(TaskSourceLink, SourceDocument)
+                .join(SourceDocument, TaskSourceLink.source_id == SourceDocument.id)
+                .where(
+                    TaskSourceLink.task_id == task.id,
+                    SourceDocument.status == "active",
+                )
+                .order_by(TaskSourceLink.created_at, TaskSourceLink.id)
+                .limit(MAX_TASK_SOURCE_COUNT)
+            )
+        )
+        source_packet: list[dict[str, Any]] = []
+        remaining_source_chars = MAX_TASK_SOURCE_CONTEXT
+        for link, source in source_rows:
+            if remaining_source_chars <= 0:
+                break
+            if link.project_id != task.project_id or source.project_id != task.project_id:
+                raise LabValidationError("task source packet contains a cross-project source")
+            if hashlib.sha256(source.content.encode("utf-8")).hexdigest() != source.content_sha256:
+                raise LabValidationError("task source packet contains a corrupted source")
+            content = source.content[:remaining_source_chars]
+            source_packet.append(source_execution_payload(link, source, content))
+            remaining_source_chars -= len(content)
+        input_snapshot = run_input_payload(
+            task,
+            protocol,
+            founder_guidance=instructions,
+            project=project,
+            agent=agent,
+            source_packet=source_packet,
+        )
+        run = LabRun(
+            kind="task",
+            project_id=task.project_id,
+            task_id=task.id,
+            input_snapshot=input_snapshot,
+            input_sha256=canonical_sha256(input_snapshot),
+        )
         task.status = "running"
         task.updated_at = _now()
         db.add(run)

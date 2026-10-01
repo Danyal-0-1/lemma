@@ -12,7 +12,7 @@ const CONTROLS = [
   { title: "Browser boundary", state: "local", detail: "Loopback peer, trusted Host, exact Origin checks, deny-framing headers, and a local CSP protect the browser boundary." },
   { title: "Child credentials", state: "filtered", detail: "Optional human tools receive a minimal allowlisted environment; provider and cloud credentials are not copied." },
   { title: "Evidence provenance", state: "durable", detail: "Captured source hashes, exact excerpts, human reviews, claim/evidence stance, trace links, and model-call prompts are retained locally." },
-  { title: "Project governance", state: "bounded", detail: "Model allowlists, cumulative per-run budgets, project spend ceilings, concurrency, cancellation, and retry lineage are enforced; classification is an explicit audit label." },
+  { title: "Project governance", state: "bounded", detail: "Model allowlists and classification-aware egress are rechecked before provider calls; budgets, concurrency, cancellation, and retry lineage remain durable." },
   { title: "Research verification", state: "manual", detail: "Automatic browsing is intentionally absent. Model syntheses must be checked against sources before use." },
 ];
 

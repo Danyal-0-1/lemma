@@ -15,6 +15,7 @@ from app.main import app
 from app.models import AutomationRun, ModelCall
 from app.providers.base import ChatMessage, StreamDone, TextDelta, Usage
 from app.providers.mock_provider import MockProvider
+from app.settings import Settings
 
 
 @pytest.fixture
@@ -317,6 +318,36 @@ async def test_multi_model_evaluation_persists_candidates_and_scores(
     assert score.score == 8.5
 
 
+async def test_evaluation_rechecks_model_policy_before_each_candidate(
+    workflow_db, monkeypatch
+) -> None:
+    _, _, project_id = _organization()
+    models = ["deepseek/deepseek-chat", "anthropic/claude-sonnet-4-5"]
+    policy = workflows.update_policy(
+        project_id,
+        {"data_classification": "public", "allowed_models": models},
+    )
+    experiment = workflows.create_evaluation(
+        {
+            "project_id": project_id,
+            "name": "Policy race",
+            "prompt": "Give a bounded answer.",
+            "models": models,
+            "criteria": ["quality"],
+        }
+    )
+    experiment, candidates = workflows.mark_evaluation_running(experiment.id)
+    monkeypatch.setattr("app.providers.mock_provider.CHUNK_DELAY_SECONDS", 0)
+    runner = EvaluationRunner(MockProvider())
+    await runner._candidate(experiment, candidates[0], policy)
+
+    workflows.update_policy(project_id, {"allowed_models": [models[0]]})
+    with pytest.raises(repo.LabValidationError, match="does not allow model"):
+        await runner._candidate(experiment, candidates[1], policy)
+    calls = workflows.project_history(project_id)["model_calls"]
+    assert [call.model for call in calls] == [models[0]]
+
+
 def test_policy_trace_templates_and_automation_approval(workflow_db) -> None:
     _, _, project_id = _organization()
     policy = workflows.update_policy(
@@ -398,6 +429,19 @@ def test_running_evaluation_counts_toward_project_concurrency(workflow_db) -> No
     workflows.mark_evaluation_running(experiment.id)
 
     with pytest.raises(repo.LabConflictError, match="concurrent run"):
+        workflows.assert_run_allowed(project_id, ["deepseek/deepseek-chat"])
+
+
+def test_run_preflight_enforces_local_only_model_egress(workflow_db, monkeypatch) -> None:
+    _, _, project_id = _organization()
+    live_settings = Settings(
+        _env_file=None,
+        mock_llm=False,
+        LEMMA_LOCAL_MODEL_IDS="ollama/research",
+    )
+    monkeypatch.setattr("app.lab.governance.get_settings", lambda: live_settings)
+
+    with pytest.raises(repo.LabValidationError, match="local-only policy"):
         workflows.assert_run_allowed(project_id, ["deepseek/deepseek-chat"])
 
 

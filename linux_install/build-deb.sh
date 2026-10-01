@@ -119,10 +119,20 @@ required_bundle_files=(
   bin/lemma-doctor
   libexec/backend_runner.py
   libexec/frontend_server.py
+  libexec/research_capsule_runner.py
   verify-release.sh
   share/doc/lemma-linux/SBOM.cdx.json
   share/doc/lemma-linux/THIRD_PARTY_NOTICES.md
   share/lemma/app/linux_install/sbom.py
+  share/lemma/app/backend/alembic.ini
+  share/lemma/app/backend/app/lab/assurance.py
+  share/lemma/app/backend/app/lab/governance.py
+  share/lemma/app/backend/app/lab/integrity.py
+  share/lemma/app/backend/app/lab/research_capsule.py
+  share/lemma/app/backend/app/lab/source_import.py
+  share/lemma/app/backend/app/lab/source_routes.py
+  share/lemma/app/backend/migrations/versions/0003_research_assurance.py
+  share/lemma/app/backend/migrations/versions/0004_research_assurance_hardening.py
   share/lemma/env.default
   share/lemma/web/index.html
   share/applications/io.lemma.Lemma.desktop.in
@@ -135,7 +145,8 @@ for relative_path in "${required_bundle_files[@]}"; do
     die "bundle is missing a required regular file: $relative_path"
 done
 for required_directory in share/doc/lemma-linux/third-party/javascript \
-  share/lemma/app/backend/app share/lemma/python share/lemma/web; do
+  share/lemma/app/backend/app share/lemma/app/backend/migrations/versions \
+  share/lemma/python share/lemma/web; do
   [[ -d "$BUNDLE_DIR/$required_directory" && \
      ! -L "$BUNDLE_DIR/$required_directory" ]] || \
     die "bundle is missing a required directory: $required_directory"

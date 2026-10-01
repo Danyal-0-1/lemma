@@ -39,6 +39,7 @@ from app.lab.automation import automation_runner
 from app.lab.evaluation import evaluation_runner
 from app.lab.orchestrator import lab_orchestrator
 from app.lab.routes import router as lab_router
+from app.lab.source_routes import router as lab_source_router
 from app.oneshot import run_oneshot
 from app.security import LocalOnlyMiddleware, websocket_is_trusted
 from app.settings import get_settings
@@ -56,7 +57,7 @@ VALID_DECISIONS = {"approve", "changes", "reject"}
 
 # A single version string surfaced in /health and (later) the `hello` WS event, so the
 # frontend can tell which backend it's talking to.
-SERVER_VERSION = "0.2.0"
+SERVER_VERSION = "0.3.0"
 
 # The frontend and backend use different ports in development. Unlike the original
 # any-loopback-port regex, this exact list does not trust an unrelated local web app.
@@ -176,6 +177,7 @@ app.add_middleware(
 app.add_middleware(LocalOnlyMiddleware, allowed_origins=ALLOWED_FRONTEND_ORIGINS)
 app.include_router(lab_router)
 app.include_router(lab_advanced_router)
+app.include_router(lab_source_router)
 
 
 def _require_host_execution() -> None:

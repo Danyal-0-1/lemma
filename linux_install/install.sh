@@ -259,10 +259,20 @@ required_bundle_files=(
   bin/lemma-doctor
   libexec/backend_runner.py
   libexec/frontend_server.py
+  libexec/research_capsule_runner.py
   verify-release.sh
   share/doc/lemma-linux/SBOM.cdx.json
   share/doc/lemma-linux/THIRD_PARTY_NOTICES.md
   share/lemma/app/linux_install/sbom.py
+  share/lemma/app/backend/alembic.ini
+  share/lemma/app/backend/app/lab/assurance.py
+  share/lemma/app/backend/app/lab/governance.py
+  share/lemma/app/backend/app/lab/integrity.py
+  share/lemma/app/backend/app/lab/research_capsule.py
+  share/lemma/app/backend/app/lab/source_import.py
+  share/lemma/app/backend/app/lab/source_routes.py
+  share/lemma/app/backend/migrations/versions/0003_research_assurance.py
+  share/lemma/app/backend/migrations/versions/0004_research_assurance_hardening.py
   share/applications/io.lemma.Lemma.desktop.in
   share/icons/hicolor/scalable/apps/io.lemma.Lemma.svg
   share/metainfo/io.lemma.Lemma.metainfo.xml
@@ -277,6 +287,7 @@ done
 required_bundle_directories=(
   share/doc/lemma-linux/third-party/javascript
   share/lemma/app/backend/app
+  share/lemma/app/backend/migrations/versions
   share/lemma/python
   share/lemma/web
 )

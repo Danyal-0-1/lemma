@@ -82,9 +82,9 @@ for command_name in basename cat chmod cp cut date dirname env find git grep gzi
   }
 done
 
-node_major="$(node -p 'process.versions.node.split(".")[0]')"
-[[ "$node_major" =~ ^[0-9]+$ && "$node_major" -ge 20 ]] || {
-  printf 'Node 20 or newer is required.\n' >&2
+node_ok="$(node -p 'const [major, minor] = process.versions.node.split(".").map(Number); Number((major === 20 && minor >= 19) || (major === 22 && minor >= 12) || major > 22)')"
+[[ "$node_ok" == "1" ]] || {
+  printf 'Node 20.19+ or 22.12+ is required.\n' >&2
   exit 1
 }
 python_abi="$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
@@ -257,6 +257,8 @@ install -m 644 -- "$SCRIPT_DIR/runtime/frontend_server.py" \
   "$bundle/libexec/frontend_server.py"
 install -m 644 -- "$SCRIPT_DIR/runtime/backend_runner.py" \
   "$bundle/libexec/backend_runner.py"
+install -m 644 -- "$SCRIPT_DIR/runtime/research_capsule_runner.py" \
+  "$bundle/libexec/research_capsule_runner.py"
 install -m 600 -- "$SCRIPT_DIR/assets/env.default" "$bundle/share/lemma/env.default"
 install -m 644 -- "$SCRIPT_DIR/assets/io.lemma.Lemma.desktop.in" \
   "$bundle/share/applications/io.lemma.Lemma.desktop.in"
@@ -473,6 +475,24 @@ find "$bundle" -type d -exec chmod 755 {} +
 find "$bundle" -type f -exec chmod go-w {} +
 chmod 755 "$bundle/bin/lemma" "$bundle/bin/lemma-server" "$bundle/bin/lemma-doctor"
 chmod 600 "$bundle/share/lemma/env.default"
+
+for required_assurance_path in \
+  share/lemma/app/backend/app/lab/assurance.py \
+  share/lemma/app/backend/app/lab/governance.py \
+  share/lemma/app/backend/app/lab/integrity.py \
+  share/lemma/app/backend/app/lab/research_capsule.py \
+  share/lemma/app/backend/app/lab/source_import.py \
+  share/lemma/app/backend/app/lab/source_routes.py \
+  share/lemma/app/backend/alembic.ini \
+  share/lemma/app/backend/migrations/versions/0003_research_assurance.py \
+  share/lemma/app/backend/migrations/versions/0004_research_assurance_hardening.py \
+  share/lemma/app/backend/migrations/versions; do
+  [[ -e "$bundle/$required_assurance_path" ]] || {
+    printf 'Research-assurance release payload is incomplete: %s\n' \
+      "$required_assurance_path" >&2
+    exit 1
+  }
+done
 
 printf '[5/6] Writing and verifying the release checksum manifest...\n'
 (

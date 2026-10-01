@@ -29,37 +29,105 @@ if ! command -v uv >/dev/null 2>&1; then
   exit 127
 fi
 if ! command -v npm >/dev/null 2>&1; then
-  echo "[dev.sh] ERROR: npm is not installed or not on PATH. Install Node 20+."
+  echo "[dev.sh] ERROR: npm is not installed or not on PATH. Install Node 20.19+ or 22.12+."
   exit 127
+fi
+node_ok="$(node -p 'const [major, minor] = process.versions.node.split(".").map(Number); Number((major === 20 && minor >= 19) || (major === 22 && minor >= 12) || major > 22)' 2>/dev/null || true)"
+if [[ "$node_ok" != "1" ]]; then
+  echo "[dev.sh] ERROR: Vite requires Node 20.19+ or 22.12+."
+  exit 1
 fi
 if [[ ! -d "$ROOT_DIR/frontend/node_modules" ]]; then
   echo "[dev.sh] ERROR: frontend dependencies are missing. Run 'make install' first."
   exit 1
 fi
 
-# cleanup() runs on EXIT (normal or via Ctrl-C). `kill 0` signals every process
-# in this script's process group — i.e. both servers we started below.
+# Refuse to create a half-running stack when another process already owns one of
+# the fixed development ports. In addition to being clearer than Uvicorn's errno,
+# this avoids briefly starting Vite only to tear it down again.
+require_free_port() {
+  local label="$1"
+  local port="$2"
+  local listeners=""
+
+  if command -v lsof >/dev/null 2>&1; then
+    if listeners="$(lsof -nP -iTCP:"$port" -sTCP:LISTEN 2>/dev/null)"; then
+      echo "[dev.sh] ERROR: $label port $port is already in use."
+      echo "$listeners"
+      echo "[dev.sh] Stop the listed process, confirm the port is free, then retry."
+      echo "[dev.sh] Inspect again with: lsof -nP -iTCP:$port -sTCP:LISTEN"
+      exit 1
+    fi
+  fi
+}
+
+require_free_port "backend" 8000
+require_free_port "frontend" 5173
+
+backend_pid=""
+frontend_pid=""
+
+# Each background server gets its own process group. Cleanup signals only those
+# groups, never this script's parent shell or `make`. The EXIT trap removes all
+# signal traps before sending anything, so cleanup cannot recursively invoke itself.
+signal_server_group() {
+  local signal_name="$1"
+  local pid="$2"
+  [[ -n "$pid" ]] || return 0
+  kill -"$signal_name" -- "-$pid" 2>/dev/null || kill -"$signal_name" "$pid" 2>/dev/null || true
+}
+
+server_group_alive() {
+  local pid="$1"
+  [[ -n "$pid" ]] && kill -0 -- "-$pid" 2>/dev/null
+}
+
 cleanup() {
+  trap - EXIT INT TERM
+  if [[ -z "$backend_pid" && -z "$frontend_pid" ]]; then
+    return
+  fi
+
   echo ""
   echo "[dev.sh] shutting down backend + frontend..."
-  # Ignore errors here: a process may already be gone.
-  kill 0 2>/dev/null || true
+  signal_server_group TERM "$backend_pid"
+  signal_server_group TERM "$frontend_pid"
+
+  # Give Uvicorn/Vite a short graceful-shutdown window, then reap any stubborn
+  # descendants in the two isolated groups so the next launch has clean ports.
+  for _attempt in {1..20}; do
+    if ! server_group_alive "$backend_pid" && ! server_group_alive "$frontend_pid"; then
+      break
+    fi
+    sleep 0.1
+  done
+  server_group_alive "$backend_pid" && signal_server_group KILL "$backend_pid"
+  server_group_alive "$frontend_pid" && signal_server_group KILL "$frontend_pid"
+  wait "$backend_pid" 2>/dev/null || true
+  wait "$frontend_pid" 2>/dev/null || true
 }
-trap cleanup EXIT INT TERM
+
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 echo "[dev.sh] starting backend on http://127.0.0.1:8000 ..."
+# Job control gives each background subshell a process group whose id is its pid.
+# That lets cleanup stop Uvicorn's reloader children without signaling `make` or zsh.
+set -m
 (
   cd "$ROOT_DIR/backend"
-  uv run uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+  exec uv run uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ) &
 backend_pid=$!
 
 echo "[dev.sh] starting frontend on http://127.0.0.1:5173 ..."
 (
   cd "$ROOT_DIR/frontend"
-  npm run dev
+  exec npm run dev
 ) &
 frontend_pid=$!
+set +m
 
 echo "[dev.sh] both running. Open http://localhost:5173  (Ctrl-C stops both)."
 

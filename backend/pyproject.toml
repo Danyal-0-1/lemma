@@ -12,7 +12,7 @@
 
 [project]
 name = "lemma-backend"
-version = "0.2.0"
+version = "0.3.0"
 description = "Local-first multi-agent R&D studio and human-controlled build workbench."
 requires-python = ">=3.12"
 license = { text = "MIT" }
@@ -28,6 +28,8 @@ dependencies = [
     "litellm>=1.51",          # M2: one interface over DeepSeek/Anthropic/OpenAI/local
     "sqlmodel>=0.0.22",       # M2+: SQLite persistence (CostRecord now; more in M3)
     "alembic>=1.14",          # versioned, backup-protected database schema upgrades
+    "pypdf>=5.0",
+    "python-multipart>=0.0.12",
 ]
 
 # Development-only dependencies: test runner, async test support, linter, and the

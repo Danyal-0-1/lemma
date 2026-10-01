@@ -16,7 +16,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from sqlalchemy import JSON, Column
+from sqlalchemy import JSON, Column, UniqueConstraint
 from sqlmodel import Field, SQLModel
 
 
@@ -196,6 +196,10 @@ class LabRun(SQLModel, table=True):
     meeting_id: str | None = Field(default=None, foreign_key="lab_meetings.id", index=True)
     retry_of_run_id: str | None = Field(default=None, foreign_key="lab_runs.id", index=True)
     attempt: int = 1
+    input_snapshot: dict[str, object] = Field(
+        default_factory=dict, sa_column=Column(JSON, nullable=False)
+    )
+    input_sha256: str | None = Field(default=None, index=True)
     status: str = "running"  # running | completed | failed | cancelled
     tokens_in: int = 0
     tokens_out: int = 0
@@ -392,6 +396,67 @@ class ClaimEvidence(SQLModel, table=True):
     excerpt_id: str = Field(foreign_key="lab_source_excerpts.id", index=True)
     stance: str = "supports"  # supports | contradicts | contextualizes
     note: str = ""
+    created_at: datetime = Field(default_factory=_utcnow)
+
+
+class ResearchProtocol(SQLModel, table=True):
+    """An immutable, versioned research plan that is frozen by human approval."""
+
+    __tablename__ = "lab_research_protocols"
+    __table_args__ = (
+        UniqueConstraint("project_id", "version", name="uq_lab_protocol_project_version"),
+    )
+
+    id: str = Field(default_factory=_uuid, primary_key=True)
+    project_id: str = Field(foreign_key="lab_projects.id", index=True)
+    version: int
+    status: str = "draft"  # draft | approved | superseded | withdrawn
+    question: str
+    hypothesis: str
+    method: str
+    acceptance_criteria: list[str] = Field(
+        default_factory=list, sa_column=Column(JSON, nullable=False)
+    )
+    limitations: list[str] = Field(default_factory=list, sa_column=Column(JSON, nullable=False))
+    # Capturing the project objective makes later scope changes detectable without
+    # preventing exploratory work while the protocol is still a draft.
+    project_objective: str
+    content_sha256: str = Field(index=True)
+    supersedes_id: str | None = Field(
+        default=None, foreign_key="lab_research_protocols.id", index=True
+    )
+    created_by: str = "founder"
+    approved_by: str | None = None
+    created_at: datetime = Field(default_factory=_utcnow)
+    approved_at: datetime | None = None
+
+
+class ResearchAssuranceAcceptance(SQLModel, table=True):
+    """Append-only human acceptance of one exact run/protocol/evidence snapshot."""
+
+    __tablename__ = "lab_research_assurance_acceptances"
+    __table_args__ = (
+        UniqueConstraint(
+            "task_id",
+            "snapshot_sha256",
+            name="uq_lab_assurance_task_snapshot",
+        ),
+    )
+
+    id: str = Field(default_factory=_uuid, primary_key=True)
+    project_id: str = Field(foreign_key="lab_projects.id", index=True)
+    task_id: str = Field(foreign_key="lab_tasks.id", index=True)
+    run_id: str = Field(foreign_key="lab_runs.id", index=True)
+    protocol_id: str = Field(foreign_key="lab_research_protocols.id", index=True)
+    snapshot_sha256: str = Field(index=True)
+    snapshot_json: dict[str, object] = Field(
+        default_factory=dict, sa_column=Column(JSON, nullable=False)
+    )
+    confirmed_criteria: list[str] = Field(
+        default_factory=list, sa_column=Column(JSON, nullable=False)
+    )
+    reviewer: str = "founder"
+    notes: str = ""
     created_at: datetime = Field(default_factory=_utcnow)
 
 

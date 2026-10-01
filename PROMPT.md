@@ -102,7 +102,7 @@ Core flows:
 - python-dotenv
 - pytest, pytest-asyncio, ruff (dev)
 - stdlib only for PTY: `os`, `pty`, `fcntl`, `termios`, `struct`, `signal`, `asyncio`
-**Frontend** (Node 20+, Vite, React 18+, TypeScript strict):
+**Frontend** (Node 20.19+ or 22.12+, Vite, React 18+, TypeScript strict):
 - @monaco-editor/react (editor, JSON view, DiffEditor)
 - @xterm/xterm + @xterm/addon-fit
 - react-resizable-panels

@@ -53,6 +53,8 @@ expressed by the plan. The recorded `read_workspace`, `write_workspace`, and
 `run_checks` capabilities are human approval/audit intent, not kernel-enforced
 filesystem or network policy. Review the plan and CLI billing/account state, inspect
 the resulting diff, and keep M9 disabled for untrusted requests or workspaces.
+Project-scoped headless execution additionally requires the project's data
+classification to be `public`; local-only and confidential project plans fail closed.
 
 ## Browser boundary
 
@@ -82,19 +84,25 @@ another process already running as the same OS user.
   sources, and meeting context, may be included. Do not capture or link confidential
   data unless that provider and model are approved for it.
 - Project policies enforce model allowlists, cumulative per-run token/cost limits,
-  project spend ceilings, and concurrency preflight, while recording a
-  data-classification label for human governance.
+  project spend ceilings, concurrency, and classification-aware model egress at run
+  preflight and again immediately before each provider call. `local_only` permits only
+  mock execution or model IDs the operator has
+  explicitly attested in `LEMMA_LOCAL_MODEL_IDS`; `confidential` requires a nonempty
+  project model allowlist. Model IDs are operator assertions, not network isolation.
   These are local guardrails, not a provider-side billing cap; provider usage can be
   reported only after a call completes, and pricing configuration must remain current.
 - Model output is a synthesis, not verified evidence. The current secure research
-  agents do not browse the web automatically. Validate important claims and sources
-  before relying on or publishing them.
+  agents do not browse the web automatically. Lemma's assurance gate can require a
+  pre-run approved protocol, task-scoped sources, hash-checked excerpts, supported and
+  non-contradicted claims, and accepted human reviews, but people remain responsible
+  for source quality and conclusions before relying on or publishing them.
 
 ## Stored data
 
-Departments, agent duty cards, captured source bodies/excerpts, claims, task briefs,
-meeting transcripts/outcomes, findings, exact model prompts, policy snapshots,
-evaluation responses/scores, automation plans/output, paths, and cost records are
+Departments, agent duty cards, captured source bodies/excerpts, claims, frozen research
+protocols and acceptance snapshots, task briefs, meeting transcripts/outcomes,
+findings, exact model prompts, policy snapshots, evaluation responses/scores,
+automation plans/output, paths, and cost records are
 stored in the local SQLite database under `backend/data/` during
 development or `${XDG_DATA_HOME:-~/.local/share}/lemma/data/` in an installed Linux
 build. Configuration, data, operational state, versioned source copies, and project
@@ -112,7 +120,8 @@ credentials in agent instructions, task briefs, or meeting agendas.
 The local FTS5 table is a derived index of project, task, finding, source, claim, and
 meeting text. Rebuilding or deleting the index does not erase canonical content; erase
 the database, backups, and state-vault history when the underlying research must be
-removed. Exported dossiers are ordinary readable Markdown and require the same care.
+removed. Exported dossiers and research capsules are ordinary readable files and
+require the same care.
 
 Pending schema migrations automatically create a consistent database snapshot under
 the data directory's private `backups/` folder. Manual backups use the same SQLite
@@ -139,6 +148,11 @@ release also contains architecture- and exact Python-minor-specific native depen
 so a mismatched interpreter is rejected. Packaging does not widen the deployment
 boundary: installed services still bind only to loopback and remain intended for one
 trusted operating-system user.
+
+The installed `lemma verify-capsule FILE` command verifies a research capsule without
+network access, provider credentials, or the live database. Its SHA-256 envelope and
+referential checks detect corruption and inconsistent records; they are not a digital
+signature and cannot establish that an untrusted author reported truthful research.
 
 ## Recommended deployment controls
 

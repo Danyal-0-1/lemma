@@ -14,6 +14,7 @@ import {
 } from "../../lib/api";
 import { useAsyncAction } from "../../lib/asyncAction";
 import { Icon } from "../components/Icons";
+import ResearchAssurance from "../components/ResearchAssurance";
 import {
   AgentAvatar,
   Badge,
@@ -512,7 +513,9 @@ export default function ResearchView() {
   const projectTasks = project
     ? snapshot.tasks.filter((task) => task.project_id === project.id)
     : [];
-  const selectedTask = snapshot.tasks.find((task) => task.id === selectedTaskId) ?? null;
+  const selectedTask = snapshot.tasks.find(
+    (task) => task.id === selectedTaskId && task.project_id === project?.id,
+  ) ?? null;
   const hasActiveAgent = snapshot.agents.some((agent) => agent.status === "active");
   const canCreateTask = project?.status === "active" && hasActiveAgent;
 
@@ -541,6 +544,8 @@ export default function ResearchView() {
             </Button>
           </div>
         </header>
+
+        {project && <ResearchAssurance project={project} task={selectedTask} />}
 
         {!project ? (
           <EmptyState

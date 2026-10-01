@@ -163,6 +163,10 @@ class HeadlessAutomationRunner:
                 raise repo.LabValidationError(
                     "only the audited Claude headless adapter is supported"
                 )
+            await asyncio.to_thread(
+                workflows.assert_automation_allowed,
+                automation.project_id,
+            )
             process = await asyncio.create_subprocess_exec(
                 str(executable),
                 "-p",

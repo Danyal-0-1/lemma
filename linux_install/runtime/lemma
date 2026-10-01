@@ -14,7 +14,7 @@ URL="http://127.0.0.1:5173"
 
 usage() {
   cat <<'EOF'
-Usage: lemma [open|start|stop|restart|status|logs|config|doctor|help]
+Usage: lemma COMMAND [ARGUMENTS]
 
   open      Start Lemma if necessary and open it in the default browser (default)
   start     Start the local background service without opening a browser
@@ -24,6 +24,8 @@ Usage: lemma [open|start|stop|restart|status|logs|config|doctor|help]
   logs      Follow the service log
   config    Print the private configuration-file path
   doctor    Check the installation, runtime, Git, and browser integration
+  verify-capsule FILE
+            Verify an exported research capsule offline without starting Lemma
 EOF
 }
 
@@ -139,6 +141,32 @@ show_logs() {
   printf 'No Lemma log exists yet.\n'
 }
 
+verify_capsule() {
+  local python_bin actual_abi safe_path
+  if [[ -n "${LEMMA_PYTHON:-}" ]]; then
+    python_bin="$(command -v -- "$LEMMA_PYTHON" 2>/dev/null || true)"
+  else
+    python_bin="$(command -v "python$PYTHON_ABI" 2>/dev/null || \
+      command -v python3 2>/dev/null || true)"
+  fi
+  [[ -n "$python_bin" ]] || {
+    printf 'Python %s is required.\n' "$PYTHON_ABI" >&2
+    return 1
+  }
+  actual_abi="$("$python_bin" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
+  [[ "$actual_abi" == "$PYTHON_ABI" ]] || {
+    printf 'This build requires Python %s, but %s is %s.\n' \
+      "$PYTHON_ABI" "$python_bin" "$actual_abi" >&2
+    return 1
+  }
+  safe_path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+  exec env -i HOME="$HOME" USER="${USER:-}" LOGNAME="${LOGNAME:-}" \
+    PATH="$safe_path" LANG="${LANG:-C.UTF-8}" \
+    "$python_bin" -I -B "$INSTALL_ROOT/libexec/research_capsule_runner.py" \
+    --backend "$INSTALL_ROOT/share/lemma/app/backend" \
+    --vendor "$INSTALL_ROOT/share/lemma/python" -- verify "$@"
+}
+
 command_name="${1:-open}"
 if [[ "$command_name" == "help" || "$command_name" == "-h" || \
       "$command_name" == "--help" ]]; then
@@ -189,6 +217,10 @@ case "$command_name" in
     ;;
   doctor)
     exec "$INSTALL_ROOT/bin/lemma-doctor"
+    ;;
+  verify-capsule)
+    shift
+    verify_capsule "$@"
     ;;
   *)
     printf 'Unknown command: %s\n\n' "$command_name" >&2

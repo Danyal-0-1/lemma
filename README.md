@@ -31,8 +31,9 @@ in [`CLAUDE.md`](CLAUDE.md) under *Milestone status*, and in `git log --oneline`
 explicitly gated option.** Alongside departments, agents, projects, tasks, meetings,
 and findings, Lemma now includes captured-source provenance, exact excerpts, human
 reviews, claims/evidence links, dependency-aware task queues, searchable history,
-project dossiers, model comparisons, per-project policies, retryable run history, and
-reusable templates. The whole research path is demoable in mock mode with no keys or
+project dossiers, model comparisons, per-project policies, retryable run history,
+reusable templates, and a compact protocol → sources → evidence → review → capsule
+assurance pipeline. The whole research path is demoable in mock mode with no keys or
 cost. Optional headless coding remains disabled unless the operator crosses every
 separate approval and configuration gate.
 
@@ -44,7 +45,7 @@ separate approval and configuration gate.
 |---|---|---|
 | Python | 3.12+ | backend |
 | [uv](https://docs.astral.sh/uv/) | latest | fast Python package/venv manager |
-| Node | 20+ | frontend (Vite) |
+| Node | 20.19+ or 22.12+ | frontend (Vite) |
 | git | any recent | version control + workspace diffs |
 
 Install `uv` (if you don't have it):
@@ -110,10 +111,14 @@ make linux-deb BUNDLE=linux_install/dist/lemma-<version>-linux-<arch>
 
 Every artifact carries a lock-derived CycloneDX dependency SBOM. Release operators
 can optionally add detached minisign signatures without changing the normal unsigned
-workflow. The build requires pre-populated npm and uv caches. See the
+workflow. Installed builds also provide `lemma verify-capsule FILE` for offline
+research-capsule integrity checks. The build requires pre-populated npm and uv caches.
+See the
 [`linux_install` guide](linux_install/README.md) for prerequisites, portable and
 Debian installation, signing and verification, upgrades, data locations, security
-notes, and limitations.
+notes, and limitations. The [Linux release workflow](.github/workflows/linux-release.yml)
+builds both formats on Ubuntu, performs portable and Debian install round trips, and
+smoke-tests the installed offline capsule verifier on every pull request and `main` push.
 
 ---
 
@@ -124,20 +129,24 @@ notes, and limitations.
 2. Add two or three agents. Give each one a role, mission, duties, the issues it must
    consider, ranked priorities, and a communication scope. These fields form its Duty
    Card; they do not grant tools or machine permissions.
-3. Open **Research**, create a project, then create an editable task with one assigned
-   agent, research objective, context, expected output, and any prerequisite tasks.
-4. Open **Knowledge** to capture a source, preserve a checksum and exact excerpt, link
-   it into the task's bounded source packet, and run the task. Review its finding,
-   record a claim, attach supporting or contradicting evidence, search the local FTS5
-   index, and export the project's Markdown dossier.
-5. Open **Meetings**, choose a project, facilitator, and permitted participants, and
+3. Open **Research**, create a project and task, then define and approve the research
+   protocol before the run. The compact assurance card always shows the next gate.
+4. Open **Knowledge** to import a human-selected PDF/text file (or capture a note),
+   preserve its checksums and exact excerpts, and link it into the task's bounded source
+   packet. Return to **Research** and run the task under the approved protocol.
+5. Review the finding in **Knowledge**, record each material claim, attach supporting,
+   contradicting, or contextual evidence, and correct links or retire superseded claims.
+   Once every finding is accepted and every active claim has intact task-linked support
+   with no unresolved contradiction, accept it in **Research** and export the offline-
+   verifiable capsule.
+6. Open **Meetings**, choose a project, facilitator, and permitted participants, and
    write an agenda. Running the room collects one bounded contribution per participant
    and then asks the facilitator for a synthesis. Record the human outcome and action
    items, then promote an action into a traceable research task.
-6. Use **Evaluations** for a bounded side-by-side model comparison and human scoring.
+7. Use **Evaluations** for a bounded side-by-side model comparison and human scoring.
    Use **Operations** to inspect/cancel/retry attempts, set model allowlists and
    cumulative budgets, and create or instantiate reusable templates.
-7. Use **HQ** for the organization overview and **Security** for capability boundaries.
+8. Use **HQ** for the organization overview and **Security** for capability boundaries.
    Open **Workbench** for the original ideation crew, specs, files, diffs, checks,
    terminal, and mentor.
 
@@ -205,7 +214,11 @@ Diff / Terminal / Checks.
    DEEPSEEK_API_KEY=sk-...
    MOCK_LLM=false
    ```
-3. Restart `make dev`. The cost meter in the status bar now tracks real spend.
+3. In **Operations → Policy**, explicitly classify the project for egress. For the
+   remote DeepSeek default, choose **Confidential** and allowlist
+   `deepseek/deepseek-chat` (or choose **Public**). The secure `local_only` default
+   intentionally rejects remote models.
+4. Restart `make dev`. The cost meter in the status bar now tracks real spend.
 
 ### ⚠️ The billing warning (read this once)
 
@@ -238,7 +251,10 @@ Automation**, review its request, plan, and recorded capability intent, then app
 and run it as a separate action. The backend accepts only the audited Claude adapter,
 uses fixed arguments rather than a shell, strips credentials from its environment,
 confines its working directory to the configured workspace root, bounds time/output,
-and kills the process group on cancellation or shutdown.
+and kills the process group on cancellation or shutdown. Because this external process
+can transmit workspace or project context independently of the research-model policy,
+project-scoped headless automation is allowed only for projects explicitly classified
+as **Public**.
 
 This remains a trusted host process, not an OS sandbox: the external CLI runs with
 your user permissions, and its recorded capability list is approval/audit context,
@@ -267,8 +283,11 @@ multi-user deployment.
 
 ## Troubleshooting
 
-- **Port already in use** — a previous `make dev` didn't shut down. Find and kill it:
-  `lsof -ti :8000 | xargs kill` (and `:5173`).
+- **Port already in use** — the launcher now reports the exact listener before starting
+  either server. Inspect it with `lsof -nP -iTCP:8000 -sTCP:LISTEN`, stop the displayed
+  PID with `kill <PID>`, and wait a moment. If that same PID ignores `TERM`, use
+  `kill -KILL <PID>` once, then confirm the `lsof` command returns nothing. Repeat with
+  port `5173` only when Vite is also already running.
 - **`uv: command not found`** — the installer put it in `~/.local/bin`. Restart your
   shell, or `source $HOME/.local/bin/env`.
 - **Terminal and Checks say “host tools locked”** — this is the secure default. Set
@@ -292,6 +311,10 @@ multi-user deployment.
   HMR socket, not this app — harmless.
 - **Real models fail with a 401/auth error** — you set `MOCK_LLM=false` without a valid
   key for the model in `config.toml`. Add the key to `backend/.env` or set `MOCK_LLM=true`.
+- **A real research run is blocked by project policy** — `local_only` deliberately
+  rejects remote egress. For a verified on-device endpoint, add its exact configured
+  model ID to `LEMMA_LOCAL_MODEL_IDS`; otherwise explicitly choose **Confidential** with
+  an allowlist or **Public** in **Operations → Policy**.
 - **Reset local state** — after backing up anything you need, remove the specific
   `backend/data/app.db` file (recreated on next start). Workspace folders are separate
   under `~/ai-company-workspaces/`; review them individually before removing them.

@@ -20,7 +20,7 @@ single-user application; it is not a remotely deployable multi-tenant service.
 │                        BACKEND (FastAPI, Python 3.12+)                       │
 │ LocalOnlyMiddleware: loopback peer + Host + exact Origin                    │
 │                                                                              │
-│ Research Lab: evidence · claims · task DAG · dossiers · evals · policies    │
+│ Research Lab: protocols · sources · claims · assurance · capsules · evals  │
 │   LabOrchestrator: prompt-only turns · bounded meetings · durable jobs       │
 │   ModelProvider: Mock or LiteLLM → configured provider                      │
 │                                                                              │
@@ -43,9 +43,11 @@ explicit executable path.
 ## Product areas
 
 - **R&D Studio.** Create durable departments or temporary mission teams, define agent
-  duty cards and communication scopes, capture checksum-addressed sources/excerpts,
-  assign dependency-aware tasks, review findings and evidence-backed claims, run fixed
-  roster meetings, compare models, export dossiers, and govern runs with project policy.
+  duty cards and communication scopes, freeze a versioned research protocol, capture
+  checksum-addressed local files/sources and exact excerpts, assign dependency-aware
+  tasks, review findings and evidence-backed claims, pass a server-enforced acceptance
+  gate, export an offline-verifiable capsule, run fixed-roster meetings, compare models,
+  and govern runs with project policy.
 - **Original Workbench — Phase 0, Ideation.** A fixed crew (Generator → Researcher →
   Critic → PM) debates a seed and converges on a human-approved **Spec**.
 - **Original Workbench — Phase 1, Build.** The approved Spec becomes a workspace; a
@@ -110,8 +112,9 @@ SQLite (via SQLModel) at `backend/data/app.db` (gitignored). Original tables sto
 ideation sessions, messages, append-only artifacts, cost, and workspaces. Lab tables
 store departments, agents, projects, tasks, runs, results, findings, meetings, ordered
 meeting messages, and append-only activity records. Evidence/workflow tables add source
-documents and exact excerpts, reviews, claims, evidence edges, meeting outcomes/actions,
-task dependencies, trace links, policy, exact model-call provenance, templates,
+documents and exact excerpts, reviews, claims, evidence edges, immutable protocol
+versions and acceptance snapshots, meeting outcomes/actions, task dependencies, trace
+links, policy, exact model-call provenance, templates,
 evaluations/scores, and approval-gated automation. A rebuildable local FTS5 index ranks
 research content; SQLite remains canonical. Alembic owns schema evolution;
 startup upgrades to its single current head and validates that every SQLModel table and
@@ -177,17 +180,26 @@ when the operator supplies an independently trusted public key. Installed builds
 the same fixed loopback ports and single-user security model as development; packaging
 does not make Lemma suitable for remote or multi-user deployment.
 
+The bundle also exposes `lemma verify-capsule FILE`. Verification loads only the
+bounded JSON artifact and pure integrity code: it does not initialize SQLite, contact a
+provider, or require network access. Capsule hashes prove internal consistency, not
+authorship; release minisign and research-capsule verification solve different problems.
+
 ---
 
 ## Current state (evidence-rich R&D Studio plus M0–M9)
 
-- **R&D control plane:** Knowledge captures immutable source identity and exact excerpts,
-  assembles bounded source packets, records human reviews and claim/evidence stance, and
-  provides local full-text search plus JSON/Markdown project dossiers. Task dependencies
+- **R&D control plane:** Research provides a compact protocol → sources → evidence →
+  review → capsule path. Knowledge imports bounded human-selected PDF/text documents,
+  captures immutable source identity and exact excerpts, assembles task-scoped source
+  packets, records human reviews and claim/evidence stance, and provides local full-text
+  search plus JSON/Markdown project dossiers. The acceptance gate requires a current
+  protocol approved before the assessed run, accepted reviews, complete intact support,
+  no unresolved contradiction, and task-linked supporting sources. Task dependencies
   are cycle-checked and enforced at run start; meeting decisions/actions can be promoted
   into tasks; trace links connect research to downstream work. Operations exposes durable
   run attempts, cancel/retry lineage, exact prompt/model provenance, cumulative token/cost
-  limits, model allowlists, recorded data classification, concurrency limits, validated
+  limits, model allowlists, classification-aware model egress, concurrency limits, validated
   template instantiation, and startup recovery for interrupted background work.
   Evaluations run models sequentially with cancellation, usage/latency records, and human
   scores. Source context, transcripts, output, and subprocesses are explicitly bounded.

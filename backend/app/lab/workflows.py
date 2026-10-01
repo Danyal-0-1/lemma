@@ -16,6 +16,8 @@ from sqlmodel import Session, SQLModel, select
 
 from app.db import get_session
 from app.lab import repo
+from app.lab.governance import enforce_model_egress
+from app.lab.integrity import MAX_TASK_SOURCE_COUNT
 from app.models import (
     ActionItem,
     ActivityRecord,
@@ -131,6 +133,7 @@ def assert_run_allowed(project_id: str, models: list[str]) -> ProjectPolicy:
     """Enforce stable preflight limits before creating a model-backed run."""
     with get_session() as db:
         policy = _policy(db, project_id, create=True)
+        enforce_model_egress(policy, models)
         disallowed = (
             sorted(set(models) - set(policy.allowed_models)) if policy.allowed_models else []
         )
@@ -160,6 +163,18 @@ def assert_run_allowed(project_id: str, models: list[str]) -> ProjectPolicy:
         ).one()
         if float(spent) >= policy.max_project_usd:
             raise repo.LabConflictError("project has reached its configured spend limit")
+        db.commit()
+        db.refresh(policy)
+        return policy
+
+
+def assert_model_allowed(project_id: str, model: str) -> ProjectPolicy:
+    """Recheck egress and allowlist policy immediately before one provider call."""
+    with get_session() as db:
+        policy = _policy(db, project_id, create=True)
+        enforce_model_egress(policy, [model])
+        if policy.allowed_models and model not in policy.allowed_models:
+            raise repo.LabValidationError(f"project policy does not allow model: {model}")
         db.commit()
         db.refresh(policy)
         return policy
@@ -244,6 +259,40 @@ def archive_source(source_id: str) -> SourceDocument:
         source.status = "archived"
         source.updated_at = _now()
         db.add(source)
+        excerpt_ids = list(
+            db.exec(select(SourceExcerpt.id).where(SourceExcerpt.source_id == source.id))
+        )
+        affected_claim_ids = (
+            list(
+                db.exec(
+                    select(ClaimEvidence.claim_id)
+                    .where(ClaimEvidence.excerpt_id.in_(excerpt_ids))
+                    .distinct()
+                )
+            )
+            if excerpt_ids
+            else []
+        )
+        for claim_id in affected_claim_ids:
+            claim = db.get(ResearchClaim, claim_id)
+            if claim is None or claim.status != "accepted":
+                continue
+            if "support" in _claim_acceptance_issues(db, claim):
+                claim.status = "proposed"
+                claim.updated_at = _now()
+                db.add(claim)
+                _record(
+                    db,
+                    "claim.auto_downgraded",
+                    "claim",
+                    claim.id,
+                    details={
+                        "project_id": claim.project_id,
+                        "reason": "supporting_source_archived",
+                        "source_id": source.id,
+                        "status": "proposed",
+                    },
+                )
         _record(db, "source.archived", "source", source.id)
         db.commit()
         db.refresh(source)
@@ -253,6 +302,8 @@ def archive_source(source_id: str) -> SourceDocument:
 def create_excerpt(source_id: str, values: dict[str, Any]) -> SourceExcerpt:
     with get_session() as db:
         source = _require(db, SourceDocument, source_id, "source")
+        if source.status != "active":
+            raise repo.LabConflictError("archived sources cannot receive new excerpts")
         quote = values["quote"]
         start = values.get("start_offset")
         end = values.get("end_offset")
@@ -288,6 +339,8 @@ def link_task_source(task_id: str, values: dict[str, Any]) -> TaskSourceLink:
         task = _require(db, ResearchTask, task_id, "task")
         source = _require(db, SourceDocument, values["source_id"], "source")
         _same_project(task.project_id, source.project_id, "source")
+        if source.status != "active":
+            raise repo.LabConflictError("archived sources cannot be linked to new tasks")
         duplicate = db.exec(
             select(TaskSourceLink).where(
                 TaskSourceLink.task_id == task.id, TaskSourceLink.source_id == source.id
@@ -310,14 +363,19 @@ def link_task_source(task_id: str, values: dict[str, Any]) -> TaskSourceLink:
 
 def task_source_packet(task_id: str) -> list[SourceDocument]:
     with get_session() as db:
-        _require(db, ResearchTask, task_id, "task")
+        task = _require(db, ResearchTask, task_id, "task")
         return list(
             db.exec(
                 select(SourceDocument)
                 .join(TaskSourceLink, TaskSourceLink.source_id == SourceDocument.id)
-                .where(TaskSourceLink.task_id == task_id, SourceDocument.status == "active")
-                .order_by(TaskSourceLink.created_at)
-                .limit(24)
+                .where(
+                    TaskSourceLink.task_id == task_id,
+                    TaskSourceLink.project_id == task.project_id,
+                    SourceDocument.project_id == task.project_id,
+                    SourceDocument.status == "active",
+                )
+                .order_by(TaskSourceLink.created_at, TaskSourceLink.id)
+                .limit(MAX_TASK_SOURCE_COUNT)
             )
         )
 
@@ -328,7 +386,18 @@ def unlink_task_source(link_id: str) -> None:
         task_id = link.task_id
         source_id = link.source_id
         db.delete(link)
-        _record(db, "task.source_unlinked", "task", task_id, details={"source_id": source_id})
+        _record(
+            db,
+            "task.source_unlinked",
+            "task",
+            task_id,
+            details={
+                "project_id": link.project_id,
+                "link_id": link.id,
+                "source_id": source_id,
+                "purpose": link.purpose,
+            },
+        )
         db.commit()
 
 
@@ -337,6 +406,38 @@ def review_finding(finding_id: str, values: dict[str, Any]) -> FindingReview:
         finding = _require(db, Finding, finding_id, "finding")
         review = FindingReview(project_id=finding.project_id, finding_id=finding.id, **values)
         db.add(review)
+        if review.decision != "accepted":
+            accepted_claims = list(
+                db.exec(
+                    select(ResearchClaim).where(
+                        ResearchClaim.finding_id == finding.id,
+                        ResearchClaim.status == "accepted",
+                    )
+                )
+            )
+            for claim in accepted_claims:
+                contradiction = db.exec(
+                    select(ClaimEvidence).where(
+                        ClaimEvidence.claim_id == claim.id,
+                        ClaimEvidence.stance == "contradicts",
+                    )
+                ).first()
+                claim.status = "disputed" if contradiction is not None else "proposed"
+                claim.updated_at = _now()
+                db.add(claim)
+                _record(
+                    db,
+                    "claim.auto_downgraded",
+                    "claim",
+                    claim.id,
+                    details={
+                        "project_id": claim.project_id,
+                        "reason": "finding_review_changed",
+                        "review_id": review.id,
+                        "decision": review.decision,
+                        "status": claim.status,
+                    },
+                )
         _record(
             db,
             "finding.reviewed",
@@ -349,7 +450,57 @@ def review_finding(finding_id: str, values: dict[str, Any]) -> FindingReview:
         return review
 
 
+def _claim_acceptance_issues(db: Session, claim: ResearchClaim) -> list[str]:
+    """Return compact invariant codes preventing an accepted claim state."""
+    issues: list[str] = []
+    if claim.finding_id is not None:
+        review = db.exec(
+            select(FindingReview)
+            .where(FindingReview.finding_id == claim.finding_id)
+            .order_by(FindingReview.created_at.desc(), FindingReview.id.desc())
+        ).first()
+        if review is None or review.decision != "accepted":
+            issues.append("finding_review")
+    evidence_rows = list(
+        db.exec(select(ClaimEvidence).where(ClaimEvidence.claim_id == claim.id))
+    )
+    if any(row.stance == "contradicts" for row in evidence_rows):
+        issues.append("contradiction")
+    has_support = False
+    for evidence in evidence_rows:
+        if evidence.stance != "supports":
+            continue
+        excerpt = db.get(SourceExcerpt, evidence.excerpt_id)
+        source = db.get(SourceDocument, excerpt.source_id) if excerpt is not None else None
+        if excerpt is None or source is None or source.status != "active":
+            continue
+        start = excerpt.start_offset
+        end = excerpt.end_offset
+        if (
+            evidence.project_id == claim.project_id
+            and excerpt.project_id == claim.project_id
+            and source.project_id == claim.project_id
+            and hashlib.sha256(source.content.encode("utf-8")).hexdigest()
+            == source.content_sha256
+            and hashlib.sha256(excerpt.quote.encode("utf-8")).hexdigest()
+            == excerpt.quote_sha256
+            and start is not None
+            and end is not None
+            and 0 <= start < end <= len(source.content)
+            and source.content[start:end] == excerpt.quote
+        ):
+            has_support = True
+            break
+    if not has_support:
+        issues.append("support")
+    return issues
+
+
 def create_claim(values: dict[str, Any]) -> ResearchClaim:
+    if values.get("status") == "accepted":
+        raise repo.LabValidationError(
+            "new claims start as proposed; accept them only after evidence review"
+        )
     with get_session() as db:
         _project(db, values["project_id"])
         finding_id = values.get("finding_id")
@@ -364,22 +515,95 @@ def create_claim(values: dict[str, Any]) -> ResearchClaim:
         return claim
 
 
+def update_claim(claim_id: str, changes: dict[str, Any]) -> ResearchClaim:
+    if not changes:
+        raise repo.LabValidationError("at least one claim field must be supplied")
+    with get_session() as db:
+        claim = _require(db, ResearchClaim, claim_id, "claim")
+        changes = dict(changes)
+        previous = {key: getattr(claim, key) for key in changes}
+        statement_changed = (
+            "statement" in changes and changes["statement"] != claim.statement
+        )
+        if statement_changed and changes.get("status") == "accepted":
+            raise repo.LabValidationError(
+                "edit the claim statement first, then accept it in a separate review action"
+            )
+        if (
+            statement_changed
+            and claim.status == "accepted"
+            and "status" not in changes
+        ):
+            changes["status"] = "proposed"
+            previous["status"] = claim.status
+        for key, value in changes.items():
+            setattr(claim, key, value)
+        if claim.status == "accepted":
+            acceptance_issues = _claim_acceptance_issues(db, claim)
+            if acceptance_issues:
+                messages = {
+                    "finding_review": "its latest finding review is accepted",
+                    "contradiction": "contradictory evidence is resolved",
+                    "support": "an active intact supporting excerpt is linked",
+                }
+                raise repo.LabConflictError(
+                    "claim cannot be accepted until "
+                    + "; ".join(messages[issue] for issue in acceptance_issues)
+                )
+        claim.updated_at = _now()
+        db.add(claim)
+        _record(
+            db,
+            "claim.updated",
+            "claim",
+            claim.id,
+            details={
+                "project_id": claim.project_id,
+                "fields": list(changes),
+                "previous": previous,
+                "current": {key: getattr(claim, key) for key in changes},
+            },
+        )
+        db.commit()
+        db.refresh(claim)
+        return claim
+
+
 def attach_claim_evidence(claim_id: str, values: dict[str, Any]) -> ClaimEvidence:
     with get_session() as db:
         claim = _require(db, ResearchClaim, claim_id, "claim")
         excerpt = _require(db, SourceExcerpt, values["excerpt_id"], "excerpt")
         _same_project(claim.project_id, excerpt.project_id, "excerpt")
+        source = _require(db, SourceDocument, excerpt.source_id, "source")
+        _same_project(claim.project_id, source.project_id, "source")
+        if source.status != "active":
+            raise repo.LabConflictError("archived sources cannot be attached as evidence")
         duplicate = db.exec(
             select(ClaimEvidence).where(
                 ClaimEvidence.claim_id == claim.id,
                 ClaimEvidence.excerpt_id == excerpt.id,
-                ClaimEvidence.stance == values.get("stance", "supports"),
             )
         ).first()
         if duplicate is not None:
             raise repo.LabConflictError("this evidence link already exists")
         evidence = ClaimEvidence(project_id=claim.project_id, claim_id=claim.id, **values)
         db.add(evidence)
+        if evidence.stance == "contradicts" and claim.status == "accepted":
+            claim.status = "disputed"
+            claim.updated_at = _now()
+            db.add(claim)
+            _record(
+                db,
+                "claim.auto_downgraded",
+                "claim",
+                claim.id,
+                details={
+                    "project_id": claim.project_id,
+                    "reason": "contradictory_evidence_attached",
+                    "evidence_id": evidence.id,
+                    "status": "disputed",
+                },
+            )
         _record(
             db,
             "claim.evidence_attached",
@@ -390,6 +614,46 @@ def attach_claim_evidence(claim_id: str, values: dict[str, Any]) -> ClaimEvidenc
         db.commit()
         db.refresh(evidence)
         return evidence
+
+
+def unlink_claim_evidence(evidence_id: str) -> None:
+    with get_session() as db:
+        evidence = _require(db, ClaimEvidence, evidence_id, "claim evidence")
+        claim_id = evidence.claim_id
+        excerpt_id = evidence.excerpt_id
+        claim = _require(db, ResearchClaim, claim_id, "claim")
+        db.delete(evidence)
+        db.flush()
+        if claim.status == "accepted" and "support" in _claim_acceptance_issues(db, claim):
+            claim.status = "proposed"
+            claim.updated_at = _now()
+            db.add(claim)
+            _record(
+                db,
+                "claim.auto_downgraded",
+                "claim",
+                claim.id,
+                details={
+                    "project_id": claim.project_id,
+                    "reason": "supporting_evidence_unlinked",
+                    "evidence_id": evidence_id,
+                    "status": "proposed",
+                },
+            )
+        _record(
+            db,
+            "claim.evidence_unlinked",
+            "claim",
+            claim_id,
+            details={
+                "project_id": evidence.project_id,
+                "evidence_id": evidence_id,
+                "excerpt_id": excerpt_id,
+                "stance": evidence.stance,
+                "note": evidence.note,
+            },
+        )
+        db.commit()
 
 
 # ── Meetings, actions, and task graph --------------------------------------
@@ -1332,6 +1596,12 @@ def begin_automation(automation_id: str) -> tuple[AutomationRun, Workspace]:
         workspace = _require(db, Workspace, automation.workspace_id, "workspace")
         if workspace.status != "active":
             raise repo.LabValidationError("automation workspace must be active")
+        if automation.project_id is not None:
+            policy = _policy(db, automation.project_id, create=True)
+            if policy.data_classification != "public":
+                raise repo.LabValidationError(
+                    "project-scoped external headless automation requires public classification"
+                )
         automation.status = "running"
         db.add(automation)
         _record(
@@ -1344,6 +1614,19 @@ def begin_automation(automation_id: str) -> tuple[AutomationRun, Workspace]:
         db.commit()
         db.refresh(automation)
         return automation, workspace
+
+
+def assert_automation_allowed(project_id: str | None) -> None:
+    """Recheck project classification immediately before external automation."""
+    if project_id is None:
+        return
+    with get_session() as db:
+        policy = _policy(db, project_id, create=True)
+        if policy.data_classification != "public":
+            raise repo.LabValidationError(
+                "project-scoped external headless automation requires public classification"
+            )
+        db.commit()
 
 
 def complete_automation(automation_id: str, output: str) -> AutomationRun:

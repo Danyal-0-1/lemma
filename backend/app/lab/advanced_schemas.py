@@ -5,10 +5,17 @@ from __future__ import annotations
 import json
 from datetime import datetime
 from enum import StrEnum
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    field_validator,
+    model_validator,
+)
 
 Name = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)]
 Body = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=500_000)]
@@ -79,7 +86,7 @@ class SourceCreate(StrictRequest):
     @classmethod
     def _bounded_metadata(cls, value: dict[str, Any]) -> dict[str, Any]:
         try:
-            encoded = json.dumps(value)
+            encoded = json.dumps(value, allow_nan=False)
         except (TypeError, ValueError) as error:
             raise ValueError("metadata must be JSON serializable") from error
         if len(encoded) > 20_000:
@@ -128,6 +135,24 @@ class ClaimCreate(StrictRequest):
     status: ClaimStatus = ClaimStatus.PROPOSED
 
 
+class ClaimUpdate(StrictRequest):
+    statement: Annotated[
+        str | None, StringConstraints(strip_whitespace=True, min_length=1, max_length=20_000)
+    ] = None
+    confidence: float | None = Field(default=None, ge=0, le=1)
+    status: ClaimStatus | None = None
+
+    @model_validator(mode="after")
+    def _has_update(self) -> ClaimUpdate:
+        if not self.model_fields_set:
+            raise ValueError("at least one claim field must be supplied")
+        if "statement" in self.model_fields_set and self.statement is None:
+            raise ValueError("statement may not be null")
+        if "status" in self.model_fields_set and self.status is None:
+            raise ValueError("status may not be null")
+        return self
+
+
 class EvidenceStance(StrEnum):
     SUPPORTS = "supports"
     CONTRADICTS = "contradicts"
@@ -138,6 +163,71 @@ class ClaimEvidenceCreate(StrictRequest):
     excerpt_id: UUID
     stance: EvidenceStance = EvidenceStance.SUPPORTS
     note: LongText = ""
+
+
+class ResearchProtocolCreate(StrictRequest):
+    question: Annotated[
+        str, StringConstraints(strip_whitespace=True, min_length=1, max_length=20_000)
+    ]
+    hypothesis: Annotated[
+        str, StringConstraints(strip_whitespace=True, min_length=1, max_length=20_000)
+    ]
+    method: Annotated[
+        str, StringConstraints(strip_whitespace=True, min_length=1, max_length=20_000)
+    ]
+    acceptance_criteria: list[Name] = Field(min_length=1, max_length=20)
+    limitations: list[ShortText] = Field(default_factory=list, max_length=20)
+    created_by: Name = "founder"
+
+    @field_validator("acceptance_criteria", "limitations")
+    @classmethod
+    def _unique_protocol_entries(cls, value: list[str]) -> list[str]:
+        if len(set(value)) != len(value):
+            raise ValueError("protocol entries must be unique")
+        return value
+
+
+class ResearchProtocolApproval(StrictRequest):
+    approved_by: Name = "founder"
+
+
+class ResearchProtocolWithdrawal(StrictRequest):
+    withdrawn_by: Name = "founder"
+    note: LongText = ""
+
+
+class ResearchAssuranceAccept(StrictRequest):
+    reviewer: Name = "founder"
+    notes: LongText = ""
+    confirmed_criteria: list[Name] = Field(min_length=1, max_length=20)
+
+    @field_validator("confirmed_criteria")
+    @classmethod
+    def _unique_confirmed_criteria(cls, value: list[str]) -> list[str]:
+        if len(set(value)) != len(value):
+            raise ValueError("confirmed criteria must be unique")
+        return value
+
+
+class ResearchCapsuleEnvelope(StrictRequest):
+    format: Literal["lemma.research-capsule.v1"]
+    hash_algorithm: Literal["sha256"]
+    project_id: UUID
+    manifest: dict[str, Any]
+    manifest_sha256: Annotated[
+        str, StringConstraints(pattern=r"^[0-9a-f]{64}$")
+    ]
+
+    @field_validator("manifest")
+    @classmethod
+    def _bounded_manifest(cls, value: dict[str, Any]) -> dict[str, Any]:
+        try:
+            encoded = json.dumps(value, allow_nan=False)
+        except (TypeError, ValueError) as error:
+            raise ValueError("capsule manifest must be JSON serializable") from error
+        if len(encoded.encode("utf-8")) > 50_000_000:
+            raise ValueError("capsule manifest is too large")
+        return value
 
 
 class MeetingOutcomeCreate(StrictRequest):

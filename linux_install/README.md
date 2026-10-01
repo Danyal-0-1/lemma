@@ -15,6 +15,11 @@ Two installation formats use the same release payload:
 Both formats serve the UI at <http://127.0.0.1:5173> and the API at
 `127.0.0.1:8000`. They do not support network-facing operation.
 
+The repository's `.github/workflows/linux-release.yml` job assembles both formats on
+Ubuntu 24.04, verifies the bundle, performs portable and Debian install/uninstall round
+trips, and runs the installed offline capsule verifier. Keep that job required for
+changes touching locks, migrations, runtime code, or packaging.
+
 ## Prerequisites
 
 ### Build host
@@ -25,7 +30,7 @@ Build releases on Linux, not macOS or Windows. The host needs:
 - Bash 4.3 or newer and standard GNU core utilities;
 - Python 3.12 or newer, including the exact minor version that target machines
   will use;
-- Node.js 20 or newer and `npm`;
+- Node.js 20.19+ or 22.12+ and `npm`;
 - `uv`, Git, GNU `tar`, `gzip`, `sha256sum`, `find`, `sort`, and `install`;
 - all packages referenced by `frontend/package-lock.json` and `backend/uv.lock`
   already present in the local npm and uv caches.
@@ -294,12 +299,35 @@ lemma status     report service and backend health
 lemma logs       follow the journal or fallback log
 lemma config     print the private configuration-file path
 lemma doctor     verify files and runtime prerequisites
+lemma verify-capsule FILE
+                 verify an exported research capsule offline
 lemma help       show launcher help
 ```
 
 When a user-level systemd unit is installed, the launcher delegates to it.
 Otherwise the portable launcher runs a private background process and keeps its PID
 and lock below the runtime directory.
+
+### Verify a research capsule offline
+
+The Research view can export the project's protocol, captured sources, exact
+excerpts, claims, evidence links, human reviews, model-call provenance, and
+acceptance records as one JSON research capsule. Verify a transferred or archived
+capsule without starting the service and without exposing provider credentials:
+
+```bash
+lemma verify-capsule ./project-<id>-research-capsule.json
+```
+
+The command checks the deterministic manifest digest, captured source and excerpt
+hashes, frozen protocol hashes, and internal evidence/acceptance references. It
+returns status `0` for an intact capsule, `1` for an integrity failure, and `2` for
+an unreadable or invalid JSON file. Verification is deliberately local and does not
+open the application database or contact a model provider.
+
+This integrity check detects corruption or edits; it is not a digital signature and
+does not prove that a source or research conclusion is true. Capsules can contain
+sensitive source text and prompts, so store and share them accordingly.
 
 ## Configuration and stored data
 
@@ -318,8 +346,11 @@ Lemma follows the XDG base-directory variables when set. Defaults are:
 The configuration is created on first start from `assets/env.default` with mode
 `0600`. Mock-model mode is on and host execution is off by default. Use
 `lemma config` to locate the active file. Set provider credentials there only when
-you intentionally set `MOCK_LLM=false`; set `ENABLE_HOST_EXECUTION=true` only when
-you intend to enable the human-operated terminal and checks.
+you intentionally set `MOCK_LLM=false`. A project classified `local_only` may use a
+real model only when its exact configured model ID appears in the comma-separated
+`LEMMA_LOCAL_MODEL_IDS` attestation; leaving that value empty is the safe default.
+Set `ENABLE_HOST_EXECUTION=true` only when you intend to enable the human-operated
+terminal and checks.
 
 Optional headless coding stays locked behind a second switch. It additionally needs
 `LEMMA_ENABLE_HEADLESS_CODING=true`, an absolute
@@ -395,6 +426,12 @@ Database migrations are forward upgrades and are not promised to be downgrade-sa
 Keep the automatic pre-migration backup until the new release has been verified, and
 do not open a database written by a newer release with an older release unless that
 path has been tested.
+
+Lemma 0.3.0's assurance schema is an ordered pair of revisions:
+`0003_research_assurance` followed by `0004_research_assurance_hardening`. Release
+artifacts must retain both. The second revision is intentionally forward-only so a
+development database that already applied the first revision can upgrade without
+rewriting or pretending that earlier migration history never happened.
 
 ## Current limitations
 

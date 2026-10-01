@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import os
@@ -15,6 +16,8 @@ import runpy
 import stat
 import subprocess
 import sys
+import tomllib
+import xml.etree.ElementTree as ET
 from email.message import Message
 from pathlib import Path
 
@@ -32,6 +35,74 @@ SHELL_SCRIPTS = (
     LINUX_ROOT / "runtime" / "lemma-server",
     LINUX_ROOT / "runtime" / "lemma-doctor",
 )
+
+
+def test_release_identity_is_synchronized() -> None:
+    """A changed version must seed a fresh Linux backend tree on upgrade."""
+    frontend_package = json.loads(
+        (REPOSITORY_ROOT / "frontend" / "package.json").read_text(encoding="utf-8")
+    )
+    frontend_lock = json.loads(
+        (REPOSITORY_ROOT / "frontend" / "package-lock.json").read_text(encoding="utf-8")
+    )
+    with (REPOSITORY_ROOT / "backend" / "pyproject.toml").open("rb") as handle:
+        backend_project = tomllib.load(handle)
+    with (REPOSITORY_ROOT / "backend" / "uv.lock").open("rb") as handle:
+        backend_lock = tomllib.load(handle)
+
+    main_tree = ast.parse(
+        (REPOSITORY_ROOT / "backend" / "app" / "main.py").read_text(encoding="utf-8")
+    )
+    server_version = next(
+        statement.value.value
+        for statement in main_tree.body
+        if isinstance(statement, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "SERVER_VERSION"
+            for target in statement.targets
+        )
+        and isinstance(statement.value, ast.Constant)
+    )
+    locked_backend = next(
+        package
+        for package in backend_lock["package"]
+        if package["name"] == backend_project["project"]["name"]
+    )
+    metainfo = ET.parse(
+        REPOSITORY_ROOT / "linux_install" / "assets" / "io.lemma.Lemma.metainfo.xml"
+    )
+    advertised_versions = [
+        release.attrib["version"] for release in metainfo.findall("./releases/release")
+    ]
+
+    expected = frontend_package["version"]
+    assert expected == "0.3.0"
+    assert frontend_lock["version"] == expected
+    assert frontend_lock["packages"][""]["version"] == expected
+    assert backend_project["project"]["version"] == expected
+    assert locked_backend["version"] == expected
+    assert server_version == expected
+    assert advertised_versions[0] == expected
+
+
+def test_assurance_dependencies_feed_the_offline_bundle() -> None:
+    """PDF/form ingestion must be lock-backed and exported into the vendored runtime."""
+    with (REPOSITORY_ROOT / "backend" / "uv.lock").open("rb") as handle:
+        backend_lock = tomllib.load(handle)
+    packages = {package["name"]: package for package in backend_lock["package"]}
+    application_dependencies = {
+        dependency["name"] for dependency in packages["lemma-backend"]["dependencies"]
+    }
+
+    for name in ("pypdf", "python-multipart"):
+        assert name in application_dependencies
+        assert packages[name]["wheels"]
+
+    builder = (LINUX_ROOT / "build.sh").read_text(encoding="utf-8")
+    assert "uv export" in builder
+    assert "--no-dev --no-emit-project" in builder
+    assert 'uv pip install --target "$bundle/share/lemma/python"' in builder
+    assert "--offline --no-python-downloads" in builder
 
 
 def test_linux_shell_entrypoints_are_executable_and_parse() -> None:
@@ -63,6 +134,136 @@ def test_linux_templates_retain_their_render_markers() -> None:
     assert "@INSTALL_ROOT@" in service
 
 
+def test_linux_configuration_exposes_local_model_attestation_safely() -> None:
+    """Installed local-only projects need the same explicit model attestation knob."""
+    defaults = (LINUX_ROOT / "assets" / "env.default").read_text(encoding="utf-8")
+    assert "MOCK_LLM=true" in defaults
+    assert "ENABLE_HOST_EXECUTION=false" in defaults
+    assert "LEMMA_ENABLE_HEADLESS_CODING=false" in defaults
+    assert "LEMMA_LOCAL_MODEL_IDS=" in defaults
+
+
+def test_packaged_capsule_verifier_runs_without_server_or_database(tmp_path: Path) -> None:
+    """The installed runner must expose the pure verifier in isolated Python mode."""
+    vendor = tmp_path / "vendor"
+    vendor.mkdir()
+    runner = LINUX_ROOT / "runtime" / "research_capsule_runner.py"
+    base_command = [
+        sys.executable,
+        "-I",
+        "-B",
+        str(runner),
+        "--backend",
+        str(REPOSITORY_ROOT / "backend"),
+        "--vendor",
+        str(vendor),
+        "--",
+        "verify",
+    ]
+
+    help_result = subprocess.run(
+        base_command + ["--help"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert help_result.returncode == 0, help_result.stderr
+    assert "usage:" in help_result.stdout
+    assert "verify" in help_result.stdout
+
+    project_id = "00000000-0000-0000-0000-000000000001"
+    manifest = {
+        "project": {"id": project_id},
+        "policy": {"project_id": project_id},
+        "sources": [],
+        "excerpts": [],
+        "claims": [],
+        "claim_evidence": [],
+        "protocols": [],
+        "tasks": [],
+        "runs": [],
+        "findings": [],
+        "results": [],
+        "source_links": [],
+        "model_calls": [],
+        "finding_reviews": [],
+        "dependencies": [],
+        "meetings": [],
+        "outcomes": [],
+        "actions": [],
+        "trace_links": [],
+        "activity": [],
+        "task_assurance": [],
+        "assurance_acceptances": [],
+    }
+    manifest_bytes = json.dumps(
+        manifest,
+        ensure_ascii=False,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    valid_capsule = tmp_path / "valid.json"
+    valid_capsule.write_text(
+        json.dumps(
+            {
+                "format": "lemma.research-capsule.v1",
+                "hash_algorithm": "sha256",
+                "project_id": project_id,
+                "manifest": manifest,
+                "manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest(),
+            }
+        ),
+        encoding="utf-8",
+    )
+    valid_result = subprocess.run(
+        base_command + [str(valid_capsule)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert valid_result.returncode == 0, valid_result.stdout + valid_result.stderr
+    assert json.loads(valid_result.stdout)["valid"] is True
+
+    invalid_capsule = tmp_path / "invalid.json"
+    invalid_capsule.write_text("not JSON\n", encoding="utf-8")
+    invalid_result = subprocess.run(
+        base_command + [str(invalid_capsule)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert invalid_result.returncode == 2
+    assert '"valid": false' in invalid_result.stdout
+
+
+def test_research_assurance_payload_is_mandatory_in_linux_artifacts() -> None:
+    """Portable and Debian installers must reject a partial assurance pipeline."""
+    required_paths = (
+        "libexec/research_capsule_runner.py",
+        "share/lemma/app/backend/app/lab/assurance.py",
+        "share/lemma/app/backend/app/lab/governance.py",
+        "share/lemma/app/backend/app/lab/integrity.py",
+        "share/lemma/app/backend/app/lab/research_capsule.py",
+        "share/lemma/app/backend/app/lab/source_import.py",
+        "share/lemma/app/backend/app/lab/source_routes.py",
+        "share/lemma/app/backend/alembic.ini",
+        "share/lemma/app/backend/migrations/versions/0003_research_assurance.py",
+        "share/lemma/app/backend/migrations/versions/0004_research_assurance_hardening.py",
+        "share/lemma/app/backend/migrations/versions",
+    )
+    for script_name in ("build.sh", "build-deb.sh", "install.sh"):
+        script = (LINUX_ROOT / script_name).read_text(encoding="utf-8")
+        for required_path in required_paths:
+            assert required_path in script, f"{script_name} does not require {required_path}"
+
+    launcher = (LINUX_ROOT / "runtime" / "lemma").read_text(encoding="utf-8")
+    assert "verify-capsule" in launcher
+    assert "research_capsule_runner.py" in launcher
+    doctor = (LINUX_ROOT / "runtime" / "lemma-doctor").read_text(encoding="utf-8")
+    assert "offline research capsule verifier" in doctor
+
+
 def test_release_sbom_is_deterministic_and_lock_derived(tmp_path: Path) -> None:
     """Inventory both dependency ecosystems without network or time-dependent data."""
     package_lock = tmp_path / "package-lock.json"
@@ -74,7 +275,7 @@ def test_release_sbom_is_deterministic_and_lock_derived(tmp_path: Path) -> None:
             {
                 "lockfileVersion": 3,
                 "packages": {
-                    "": {"name": "lemma-frontend", "version": "0.2.0"},
+                    "": {"name": "lemma-frontend", "version": "0.3.0"},
                     "node_modules/@example/widget": {
                         "version": "1.2.3",
                         "license": "MIT",
@@ -103,7 +304,7 @@ def test_release_sbom_is_deterministic_and_lock_derived(tmp_path: Path) -> None:
         "--requirements",
         str(requirements),
         "--application-version",
-        "0.2.0",
+        "0.3.0",
     ]
     subprocess.run(command + ["--output", str(first_output)], check=True)
     subprocess.run(command + ["--output", str(second_output)], check=True)
@@ -126,7 +327,7 @@ def test_release_sbom_is_deterministic_and_lock_derived(tmp_path: Path) -> None:
             "validate",
             str(first_output),
             "--application-version",
-            "0.2.0",
+            "0.3.0",
         ],
         check=True,
     )
@@ -202,20 +403,26 @@ def _fixture_bundle(bundle: Path) -> None:
         "aarch64": "aarch64",
     }.get(machine, machine)
     bundle.mkdir(mode=0o755)
-    _write(bundle, "VERSION", "0.2.0\n")
+    _write(bundle, "VERSION", "0.3.0\n")
     _write(bundle, "PYTHON_ABI", f"{sys.version_info.major}.{sys.version_info.minor}\n")
     _write(
         bundle,
         "BUILD_INFO",
-        f"version=0.2.0\narchitecture={architecture}\n"
+        f"version=0.3.0\narchitecture={architecture}\n"
         f"python_abi={sys.version_info.major}.{sys.version_info.minor}\n",
     )
     _write(bundle, "install.sh", (LINUX_ROOT / "install.sh").read_text(), 0o755)
     _write(bundle, "uninstall.sh", (LINUX_ROOT / "uninstall.sh").read_text(), 0o755)
-    for command_name in ("lemma", "lemma-server", "lemma-doctor"):
+    _write(bundle, "bin/lemma", (LINUX_ROOT / "runtime" / "lemma").read_text(), 0o755)
+    for command_name in ("lemma-server", "lemma-doctor"):
         _write(bundle, f"bin/{command_name}", "#!/usr/bin/env bash\nexit 0\n", 0o755)
     _write(bundle, "libexec/backend_runner.py", "# fixture\n")
     _write(bundle, "libexec/frontend_server.py", "# fixture\n")
+    _write(
+        bundle,
+        "libexec/research_capsule_runner.py",
+        (LINUX_ROOT / "runtime" / "research_capsule_runner.py").read_text(),
+    )
     _write(bundle, "verify-release.sh", (LINUX_ROOT / "verify-release.sh").read_text(), 0o755)
     _write(
         bundle,
@@ -240,7 +447,7 @@ def _fixture_bundle(bundle: Path) -> None:
             "properties": [{"name": "lemma:ecosystem", "value": "python"}],
         },
     ]
-    root_reference = "pkg:generic/lemma@0.2.0"
+    root_reference = "pkg:generic/lemma@0.3.0"
     fixture_sbom = {
         "bomFormat": "CycloneDX",
         "specVersion": "1.5",
@@ -250,7 +457,7 @@ def _fixture_bundle(bundle: Path) -> None:
                 "type": "application",
                 "bom-ref": root_reference,
                 "name": "lemma",
-                "version": "0.2.0",
+                "version": "0.3.0",
                 "purl": root_reference,
             }
         },
@@ -272,6 +479,42 @@ def _fixture_bundle(bundle: Path) -> None:
     _write(bundle, "share/lemma/web/index.html", '<div id="root"></div>\n')
     _write(bundle, "share/lemma/transition/old.txt", "old layout\n")
     _write(bundle, "share/lemma/app/backend/app/__init__.py", "")
+    _write(bundle, "share/lemma/app/backend/app/lab/__init__.py", "")
+    for module_name in ("assurance", "governance", "source_import", "source_routes"):
+        _write(bundle, f"share/lemma/app/backend/app/lab/{module_name}.py", "# fixture\n")
+    _write(
+        bundle,
+        "share/lemma/app/backend/app/lab/integrity.py",
+        (REPOSITORY_ROOT / "backend" / "app" / "lab" / "integrity.py").read_text(),
+    )
+    _write(
+        bundle,
+        "share/lemma/app/backend/app/lab/research_capsule.py",
+        (REPOSITORY_ROOT / "backend" / "app" / "lab" / "research_capsule.py").read_text(),
+    )
+    _write(bundle, "share/lemma/app/backend/alembic.ini", "[alembic]\n")
+    _write(
+        bundle,
+        "share/lemma/app/backend/migrations/versions/0003_research_assurance.py",
+        (
+            REPOSITORY_ROOT
+            / "backend"
+            / "migrations"
+            / "versions"
+            / "0003_research_assurance.py"
+        ).read_text(),
+    )
+    _write(
+        bundle,
+        "share/lemma/app/backend/migrations/versions/0004_research_assurance_hardening.py",
+        (
+            REPOSITORY_ROOT
+            / "backend"
+            / "migrations"
+            / "versions"
+            / "0004_research_assurance_hardening.py"
+        ).read_text(),
+    )
     _write(bundle, "share/lemma/python/.keep", "")
     _write(bundle, "share/doc/lemma-linux/third-party/javascript/.keep", "")
     _write(
@@ -378,6 +621,16 @@ def test_portable_install_and_uninstall_round_trip(tmp_path: Path) -> None:
     assert stat.S_IMODE((prefix / "share/lemma/env.default").stat().st_mode) == 0o600
     assert not (prefix / ".lemma-install.next").exists()
     assert not (prefix / ".lemma-install.previous").exists()
+
+    verifier_help = subprocess.run(
+        [str(prefix / "bin/lemma"), "verify-capsule", "--help"],
+        check=False,
+        env=environment,
+        capture_output=True,
+        text=True,
+    )
+    assert verifier_help.returncode == 0, verifier_help.stderr
+    assert "usage:" in verifier_help.stdout
 
     _write(bundle, "share/lemma/web/index.html", '<div id="root">upgraded</div>\n')
     (bundle / "share/lemma/transition/old.txt").unlink()

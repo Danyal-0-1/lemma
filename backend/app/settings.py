@@ -62,6 +62,11 @@ class Settings(BaseSettings):
     # Mock mode is ON by default: the app runs fully with zero keys and zero cost.
     mock_llm: bool = True
 
+    # Comma-separated model IDs the local operator has verified resolve only to an
+    # on-device endpoint. We deliberately do not infer locality from a LiteLLM prefix:
+    # an OpenAI-compatible or Ollama endpoint can itself point at another machine.
+    local_model_ids: str = Field(default="", validation_alias="LEMMA_LOCAL_MODEL_IDS")
+
     # Shells and verification commands execute programs on the host. Keep that entire
     # surface off unless the local operator opts in deliberately.
     enable_host_execution: bool = False
@@ -118,6 +123,10 @@ class Settings(BaseSettings):
         so the user gets a clear message instead of a confusing 401 later.
         """
         return bool(self.deepseek_api_key or self.anthropic_api_key or self.openai_api_key)
+
+    def local_models(self) -> set[str]:
+        """Return model IDs explicitly attested as local by this machine's operator."""
+        return {item.strip() for item in self.local_model_ids.split(",") if item.strip()}
 
     def assert_safe_binding(self) -> None:
         """Refuse to run on a non-localhost host, without an escape hatch.

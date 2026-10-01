@@ -1,0 +1,147 @@
+name: Linux release assurance
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-install-verify:
+    name: Bundle, install, and verify on Ubuntu
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v7
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v10
+        with:
+          version: latest-known
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+
+      - name: Populate locked dependency caches
+        run: |
+          npm ci --prefix frontend --ignore-scripts --no-audit --no-fund
+          cd backend
+          uv sync --frozen
+
+      - name: Run application and release tests
+        run: |
+          cd backend
+          uv run ruff check .
+          uv run pytest -q
+          cd ../frontend
+          npm test
+          npm run build
+
+      - name: Build offline portable and Debian artifacts
+        env:
+          LEMMA_CI_ROOT: ${{ runner.temp }}/lemma-release-assurance
+        run: |
+          mkdir -p "$LEMMA_CI_ROOT/dist" "$LEMMA_CI_ROOT/deb"
+          ./linux_install/build.sh --output "$LEMMA_CI_ROOT/dist"
+          bundle="$(find "$LEMMA_CI_ROOT/dist" -mindepth 1 -maxdepth 1 -type d -name 'lemma-*-linux-*' -print -quit)"
+          test -n "$bundle"
+          ./linux_install/verify-release.sh --bundle "$bundle"
+          ./linux_install/build-deb.sh --bundle "$bundle" --output "$LEMMA_CI_ROOT/deb"
+
+      - name: Create an offline verifier fixture
+        env:
+          LEMMA_CI_ROOT: ${{ runner.temp }}/lemma-release-assurance
+        run: |
+          backend/.venv/bin/python - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          project_id = "00000000-0000-0000-0000-000000000001"
+          manifest = {
+              "project": {"id": project_id},
+              "policy": {"project_id": project_id},
+              "sources": [],
+              "excerpts": [],
+              "claims": [],
+              "claim_evidence": [],
+              "protocols": [],
+              "tasks": [],
+              "runs": [],
+              "findings": [],
+              "results": [],
+              "source_links": [],
+              "model_calls": [],
+              "finding_reviews": [],
+              "dependencies": [],
+              "meetings": [],
+              "outcomes": [],
+              "actions": [],
+              "trace_links": [],
+              "activity": [],
+              "task_assurance": [],
+              "assurance_acceptances": [],
+          }
+          canonical = json.dumps(
+              manifest,
+              ensure_ascii=False,
+              allow_nan=False,
+              sort_keys=True,
+              separators=(",", ":"),
+          ).encode()
+          capsule = {
+              "format": "lemma.research-capsule.v1",
+              "hash_algorithm": "sha256",
+              "project_id": project_id,
+              "manifest": manifest,
+              "manifest_sha256": hashlib.sha256(canonical).hexdigest(),
+          }
+          destination = Path(os.environ["LEMMA_CI_ROOT"]) / "capsule.json"
+          destination.write_text(json.dumps(capsule), encoding="utf-8")
+          PY
+
+      - name: Portable install round trip
+        env:
+          LEMMA_CI_ROOT: ${{ runner.temp }}/lemma-release-assurance
+          XDG_CONFIG_HOME: ${{ runner.temp }}/lemma-release-assurance/xdg/config
+          XDG_DATA_HOME: ${{ runner.temp }}/lemma-release-assurance/xdg/data
+          XDG_STATE_HOME: ${{ runner.temp }}/lemma-release-assurance/xdg/state
+        run: |
+          bundle="$(find "$LEMMA_CI_ROOT/dist" -mindepth 1 -maxdepth 1 -type d -name 'lemma-*-linux-*' -print -quit)"
+          "$bundle/install.sh" --bundle "$bundle" --prefix "$LEMMA_CI_ROOT/portable"
+          "$HOME/.local/bin/lemma" verify-capsule "$LEMMA_CI_ROOT/capsule.json"
+          "$LEMMA_CI_ROOT/portable/uninstall.sh" --prefix "$LEMMA_CI_ROOT/portable"
+
+      - name: Debian install round trip
+        env:
+          LEMMA_CI_ROOT: ${{ runner.temp }}/lemma-release-assurance
+          XDG_CONFIG_HOME: ${{ runner.temp }}/lemma-release-assurance/deb-xdg/config
+          XDG_DATA_HOME: ${{ runner.temp }}/lemma-release-assurance/deb-xdg/data
+          XDG_STATE_HOME: ${{ runner.temp }}/lemma-release-assurance/deb-xdg/state
+        run: |
+          package="$(find "$LEMMA_CI_ROOT/deb" -maxdepth 1 -type f -name 'lemma_*.deb' -print -quit)"
+          test -n "$package"
+          sudo apt-get install -y "$package"
+          /usr/bin/lemma verify-capsule "$LEMMA_CI_ROOT/capsule.json"
+          sudo apt-get remove -y lemma

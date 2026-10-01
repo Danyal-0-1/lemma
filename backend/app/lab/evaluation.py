@@ -78,6 +78,11 @@ class EvaluationRunner:
         policy: ProjectPolicy,
     ) -> None:
         await asyncio.to_thread(workflows.mark_evaluation_candidate_running, candidate.id)
+        policy = await asyncio.to_thread(
+            workflows.assert_model_allowed,
+            experiment.project_id,
+            candidate.model,
+        )
         system_prompt = (
             "You are one candidate in a controlled model evaluation. Answer the supplied "
             "prompt directly. Do not claim tools, browsing, files, or evidence that were "
