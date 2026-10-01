@@ -759,6 +759,89 @@ def test_capsule_is_deterministic_offline_verifiable_and_exposed_by_api(
     assert len(acceptances) == 1
 
 
+def test_capsule_rejects_stale_current_research_state(assurance_db) -> None:
+    _, agent_id, project_id, task_id = _organization()
+    protocol = _protocol(project_id)
+    _, excerpt, source_link = _source_evidence(project_id, task_id)
+    assert protocol.approved_at is not None
+    _, finding_id = _completed_result(
+        assurance_db,
+        agent_id,
+        project_id,
+        task_id,
+        _after(protocol.approved_at, source_link.created_at),
+    )
+    _reviewed_claim(project_id, finding_id, excerpt.id)
+    second_claim = workflows.create_claim(
+        {
+            "project_id": project_id,
+            "finding_id": finding_id,
+            "statement": "The reported result was measured under the captured conditions.",
+            "confidence": 0.85,
+        }
+    )
+    workflows.attach_claim_evidence(
+        second_claim.id,
+        {"excerpt_id": excerpt.id, "stance": "supports", "note": "Same measurement"},
+    )
+    workflows.update_claim(second_claim.id, {"status": "accepted"})
+    assurance.accept_task(
+        task_id,
+        {"reviewer": "Founder", "confirmed_criteria": protocol.acceptance_criteria},
+    )
+    capsule = research_capsule.build_capsule(project_id)
+    assert research_capsule.verify_capsule(capsule)["valid"] is True
+
+    def verified_after_rehash(changed: dict) -> dict:
+        changed["manifest_sha256"] = canonical_sha256(changed["manifest"])
+        return research_capsule.verify_capsule(changed)
+
+    added_source_link = copy.deepcopy(capsule)
+    extra_link = copy.deepcopy(added_source_link["manifest"]["source_links"][0])
+    extra_link["id"] = "post-acceptance-source-link"
+    extra_link["created_at"] = "2099-01-01T00:00:00+00:00"
+    added_source_link["manifest"]["source_links"].append(extra_link)
+    result = verified_after_rehash(added_source_link)
+    assert result["valid"] is False
+    assert any("stale evidence state" in error for error in result["errors"])
+
+    newer_run = copy.deepcopy(capsule)
+    extra_run = copy.deepcopy(newer_run["manifest"]["runs"][0])
+    extra_run["id"] = "newer-completed-run"
+    extra_run["started_at"] = "2099-01-01T00:00:00+00:00"
+    extra_run["completed_at"] = "2099-01-01T00:00:01+00:00"
+    newer_run["manifest"]["runs"].append(extra_run)
+    result = verified_after_rehash(newer_run)
+    assert result["valid"] is False
+    assert any("does not use the latest run" in error for error in result["errors"])
+
+    rejected_review = copy.deepcopy(capsule)
+    extra_review = copy.deepcopy(rejected_review["manifest"]["finding_reviews"][0])
+    extra_review["id"] = "post-acceptance-rejected-review"
+    extra_review["decision"] = "rejected"
+    extra_review["created_at"] = "2099-01-01T00:00:00+00:00"
+    rejected_review["manifest"]["finding_reviews"].append(extra_review)
+    result = verified_after_rehash(rejected_review)
+    assert result["valid"] is False
+    assert any("stale evidence state" in error for error in result["errors"])
+
+    changed_non_last_claim = copy.deepcopy(capsule)
+    snapshot_claims = changed_non_last_claim["manifest"]["task_assurance"][0][
+        "snapshot"
+    ]["claims"]
+    assert len(snapshot_claims) == 2
+    first_frozen_claim_id = snapshot_claims[0]["id"]
+    first_current_claim = next(
+        claim
+        for claim in changed_non_last_claim["manifest"]["claims"]
+        if claim["id"] == first_frozen_claim_id
+    )
+    first_current_claim["statement"] = "A post-acceptance statement rewrite."
+    result = verified_after_rehash(changed_non_last_claim)
+    assert result["valid"] is False
+    assert any("stale evidence state" in error for error in result["errors"])
+
+
 def test_capsule_rejects_fabricated_ready_assessment(assurance_db) -> None:
     _, _, project_id, _ = _organization()
     capsule = research_capsule.build_capsule(project_id)

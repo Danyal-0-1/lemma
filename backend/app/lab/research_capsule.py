@@ -323,6 +323,84 @@ def verify_capsule(capsule: dict[str, Any]) -> dict[str, Any]:
         "Every exported research record stays within the capsule project.",
         "One or more exported research records cross project scope.",
     )
+
+    def current_task_packets(
+        task_id: str,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        links = sorted(
+            (link for link in source_links.values() if link.get("task_id") == task_id),
+            key=lambda link: (str(link.get("created_at")), str(link.get("id"))),
+        )
+        active_candidates: list[dict[str, Any]] = []
+        for link in links:
+            source = sources.get(str(link.get("source_id")))
+            if (
+                source is not None
+                and source.get("status") == "active"
+                and len(active_candidates) < MAX_TASK_SOURCE_COUNT
+            ):
+                active_candidates.append(link)
+        candidate_ids = {link.get("id") for link in active_candidates}
+        remaining = MAX_TASK_SOURCE_CONTEXT
+        prompt_packet: list[dict[str, Any]] = []
+        descriptors: list[dict[str, Any]] = []
+        for link in links:
+            source = sources.get(str(link.get("source_id")))
+            reason: str | None = None
+            usable = False
+            if source is None:
+                reason = "missing_source"
+            elif source.get("status") != "active":
+                reason = "source_archived"
+            elif link.get("id") not in candidate_ids:
+                reason = "outside_runtime_limit"
+            elif source.get("project_id") != project_id:
+                reason = "different_project"
+            elif (
+                not isinstance(source.get("content"), str)
+                or hashlib.sha256(source["content"].encode()).hexdigest()
+                != source.get("content_sha256")
+            ):
+                reason = "source_integrity"
+            elif remaining <= 0:
+                reason = "outside_runtime_context_limit"
+            else:
+                usable = True
+                content = source["content"][:remaining]
+                prompt_packet.append(
+                    {
+                        "link_id": link.get("id"),
+                        "source_id": source.get("id"),
+                        "purpose": link.get("purpose"),
+                        "link_created_at": link.get("created_at"),
+                        "title": source.get("title"),
+                        "origin": source.get("origin"),
+                        "content": content,
+                        "content_sha256": source.get("content_sha256"),
+                        "included_content_sha256": hashlib.sha256(
+                            content.encode()
+                        ).hexdigest(),
+                        "included_chars": len(content),
+                        "truncated": len(content) < len(source["content"]),
+                    }
+                )
+                remaining -= len(content)
+            descriptors.append(
+                {
+                    "link_id": link.get("id"),
+                    "source_id": link.get("source_id"),
+                    "purpose": link.get("purpose"),
+                    "created_at": link.get("created_at"),
+                    "source_status": source.get("status") if source is not None else "missing",
+                    "source_sha256": (
+                        source.get("content_sha256") if source is not None else None
+                    ),
+                    "usable": usable,
+                    "exclusion_reason": reason,
+                }
+            )
+        return prompt_packet, descriptors
+
     task_assurance_ok = isinstance(task_assurance, list)
     assurance_task_ids = [
         row.get("task_id") for row in task_assurance if isinstance(row, dict)
@@ -369,7 +447,9 @@ def verify_capsule(capsule: dict[str, Any]) -> dict[str, Any]:
                 errors.append(
                     f"task assurance {row.get('task_id')} does not match its current task"
                 )
-            if (
+            run_id = row.get("run_id")
+            snapshot_run = snapshot.get("run")
+            if snapshot_run is not None and (
                 not isinstance(snapshot_run, dict)
                 or not isinstance(snapshot_run.get("input_snapshot"), dict)
                 or not isinstance(project, dict)
@@ -380,8 +460,6 @@ def verify_capsule(capsule: dict[str, Any]) -> dict[str, Any]:
                 errors.append(
                     f"task assurance {row.get('task_id')} does not match its current project"
                 )
-            run_id = row.get("run_id")
-            snapshot_run = snapshot.get("run")
             exported_run = runs.get(str(run_id)) if run_id is not None else None
             if run_id is None:
                 if snapshot_run is not None:
@@ -534,9 +612,6 @@ def verify_capsule(capsule: dict[str, Any]) -> dict[str, Any]:
                 }
                 if frozen_claim_ids != set(current_active_claims):
                     current_state_ok = False
-                for frozen_claim in snapshot_claims or []:
-                    if not isinstance(frozen_claim, dict):
-                        current_state_ok = False
                 for frozen_finding in snapshot_findings or []:
                     if not isinstance(frozen_finding, dict):
                         current_state_ok = False
@@ -562,6 +637,9 @@ def verify_capsule(capsule: dict[str, Any]) -> dict[str, Any]:
                         or latest_review.get("id") != frozen_review.get("id")
                         or latest_review.get("decision") != "accepted"
                     ):
+                        current_state_ok = False
+                for frozen_claim in snapshot_claims or []:
+                    if not isinstance(frozen_claim, dict):
                         current_state_ok = False
                         continue
                     current_claim = current_active_claims.get(str(frozen_claim.get("id")))
@@ -633,6 +711,7 @@ def verify_capsule(capsule: dict[str, Any]) -> dict[str, Any]:
                     or acceptance.get("run_id") != run_id
                     or acceptance.get("snapshot_sha256") != snapshot_hash
                     or acceptance.get("snapshot_json") != snapshot
+                    or not isinstance(summary, dict)
                     or summary.get("snapshot_sha256") != snapshot_hash
                 ):
                     task_assurance_ok = False
@@ -803,83 +882,6 @@ def verify_capsule(capsule: dict[str, Any]) -> dict[str, Any]:
             prior_order = order
             remaining -= len(content)
         return True
-
-    def current_task_packets(
-        task_id: str,
-    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-        links = sorted(
-            (link for link in source_links.values() if link.get("task_id") == task_id),
-            key=lambda link: (str(link.get("created_at")), str(link.get("id"))),
-        )
-        active_candidates: list[dict[str, Any]] = []
-        for link in links:
-            source = sources.get(str(link.get("source_id")))
-            if (
-                source is not None
-                and source.get("status") == "active"
-                and len(active_candidates) < MAX_TASK_SOURCE_COUNT
-            ):
-                active_candidates.append(link)
-        candidate_ids = {link.get("id") for link in active_candidates}
-        remaining = MAX_TASK_SOURCE_CONTEXT
-        prompt_packet: list[dict[str, Any]] = []
-        descriptors: list[dict[str, Any]] = []
-        for link in links:
-            source = sources.get(str(link.get("source_id")))
-            reason: str | None = None
-            usable = False
-            if source is None:
-                reason = "missing_source"
-            elif source.get("status") != "active":
-                reason = "source_archived"
-            elif link.get("id") not in candidate_ids:
-                reason = "outside_runtime_limit"
-            elif source.get("project_id") != project_id:
-                reason = "different_project"
-            elif (
-                not isinstance(source.get("content"), str)
-                or hashlib.sha256(source["content"].encode()).hexdigest()
-                != source.get("content_sha256")
-            ):
-                reason = "source_integrity"
-            elif remaining <= 0:
-                reason = "outside_runtime_context_limit"
-            else:
-                usable = True
-                content = source["content"][:remaining]
-                prompt_packet.append(
-                    {
-                        "link_id": link.get("id"),
-                        "source_id": source.get("id"),
-                        "purpose": link.get("purpose"),
-                        "link_created_at": link.get("created_at"),
-                        "title": source.get("title"),
-                        "origin": source.get("origin"),
-                        "content": content,
-                        "content_sha256": source.get("content_sha256"),
-                        "included_content_sha256": hashlib.sha256(
-                            content.encode()
-                        ).hexdigest(),
-                        "included_chars": len(content),
-                        "truncated": len(content) < len(source["content"]),
-                    }
-                )
-                remaining -= len(content)
-            descriptors.append(
-                {
-                    "link_id": link.get("id"),
-                    "source_id": link.get("source_id"),
-                    "purpose": link.get("purpose"),
-                    "created_at": link.get("created_at"),
-                    "source_status": source.get("status") if source is not None else "missing",
-                    "source_sha256": (
-                        source.get("content_sha256") if source is not None else None
-                    ),
-                    "usable": usable,
-                    "exclusion_reason": reason,
-                }
-            )
-        return prompt_packet, descriptors
 
     for excerpt in excerpts.values():
         if excerpt.get("source_id") not in sources:

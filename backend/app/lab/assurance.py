@@ -274,7 +274,7 @@ def _latest_completed_run(db: Session, task_id: str) -> LabRun | None:
     return db.exec(
         select(LabRun)
         .where(LabRun.task_id == task_id, LabRun.status == "completed")
-        .order_by(LabRun.started_at.desc())
+        .order_by(LabRun.started_at.desc(), LabRun.id.desc())
     ).first()
 
 
