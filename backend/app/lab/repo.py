@@ -37,6 +37,8 @@ from app.models import (
     TaskResult,
     TaskSourceLink,
 )
+from app.providers.connections import ModelConnectionError, execution_connection
+from app.settings import get_settings
 
 
 class LabError(Exception):
@@ -481,6 +483,16 @@ def begin_task_run(task_id: str, instructions: str = "") -> LabRun:
         project = _ensure_project(db, task.project_id, active=True)
         agent = _ensure_agent(db, task.assigned_agent_id, active=True)
         _validate_assignment(db, task.department_id, agent)
+        settings = get_settings()
+        try:
+            connection = execution_connection(
+                agent.model_connection,
+                agent.model,
+                settings=settings,
+                require_configured=not settings.mock_llm,
+            )
+        except ModelConnectionError as error:
+            raise LabValidationError(str(error)) from error
         running = db.exec(
             select(LabRun).where(LabRun.task_id == task.id, LabRun.status == "running")
         ).first()
@@ -524,6 +536,7 @@ def begin_task_run(task_id: str, instructions: str = "") -> LabRun:
             founder_guidance=instructions,
             project=project,
             agent=agent,
+            model_connection=connection.provenance(),
             source_packet=source_packet,
         )
         run = LabRun(

@@ -8,6 +8,7 @@ import {
 } from "../../store/preferencesStore";
 import { useShellStore } from "../../store/shellStore";
 import { Icon } from "./Icons";
+import { ModelConnectionsPanel, useModelConnections } from "./ModelConnections";
 
 const THEMES: { id: ThemePreference; label: string; detail: string }[] = [
   { id: "system", label: "System", detail: "Follow your operating system live" },
@@ -37,8 +38,17 @@ function AccountMenu() {
   const mock = useAppStore((state) => state.mock);
   const hostExecution = useAppStore((state) => state.hostExecutionEnabled);
   const headlessCoding = useAppStore((state) => state.headlessCodingEnabled);
+  const { catalog } = useModelConnections();
   const ref = useRef<HTMLDivElement>(null);
   useDismiss(ref, () => setOverlay(null));
+  const availableModels = catalog?.connections.filter(
+    (connection) => connection.status === "ready" || connection.status === "available",
+  ).length;
+  const modelSummary = catalog?.mock_mode
+    ? "Mock mode"
+    : catalog
+      ? `${availableModels} available`
+      : mock ? "Mock mode" : "Checking…";
 
   return (
     <div ref={ref} className="shell-popover shell-account-menu" role="dialog" aria-label="Account">
@@ -48,7 +58,7 @@ function AccountMenu() {
       </header>
       <div className="shell-menu-section">
         <span><i className={`shell-status-dot is-${status}`} />Backend</span><b>{status}</b>
-        <span>Provider</span><b>{mock ? "Mock / local" : "Configured"}</b>
+        <span>Models</span><b>{modelSummary}</b>
         <span>Host tools</span><b>{hostExecution ? "Enabled" : "Locked"}</b>
         <span>Headless coding</span><b>{headlessCoding ? "Enabled" : "Locked"}</b>
       </div>
@@ -61,7 +71,7 @@ function AccountMenu() {
 }
 
 function SettingsModal() {
-  const [category, setCategory] = useState<"appearance" | "editor" | "security">("appearance");
+  const [category, setCategory] = useState<"appearance" | "editor" | "models" | "security">("appearance");
   const setOverlay = useShellStore((state) => state.setOverlay);
   const theme = usePreferencesStore((state) => state.theme);
   const setTheme = usePreferencesStore((state) => state.setTheme);
@@ -87,6 +97,7 @@ function SettingsModal() {
           <nav aria-label="Settings categories">
             <button type="button" className={category === "appearance" ? "is-active" : ""} onClick={() => setCategory("appearance")}>Appearance</button>
             <button type="button" className={category === "editor" ? "is-active" : ""} onClick={() => setCategory("editor")}>Editor</button>
+            <button type="button" className={category === "models" ? "is-active" : ""} onClick={() => setCategory("models")}>Models</button>
             <button type="button" className={category === "security" ? "is-active" : ""} onClick={() => setCategory("security")}>Security</button>
           </nav>
           <div className="shell-settings-content">
@@ -119,6 +130,7 @@ function SettingsModal() {
                 <input type="checkbox" checked={wordWrap} onChange={(event) => setWordWrap(event.target.checked)} />
               </label>
             </section>}
+            {category === "models" && <ModelConnectionsPanel />}
             {category === "security" && (
               <section>
                 <h3>Local security boundary</h3>

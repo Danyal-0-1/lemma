@@ -7,6 +7,7 @@ The router is intentionally a thin boundary: Pydantic validates browser input,
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Callable
 from typing import Any
 
@@ -20,18 +21,30 @@ from app.lab.orchestrator import lab_orchestrator
 from app.lab.schemas import (
     AgentCreate,
     AgentUpdate,
+    ConnectionId,
     DepartmentCreate,
     DepartmentUpdate,
     MeetingCreate,
     MeetingUpdate,
+    ModelId,
     ProjectCreate,
     ProjectUpdate,
     RunRequest,
     TaskCreate,
     TaskUpdate,
 )
+from app.providers import factory as provider_factory
+from app.providers.connections import (
+    ModelConnectionError,
+    connection_catalog,
+    get_connection,
+    validate_connection_model,
+)
+from app.settings import get_settings
 
 router = APIRouter(prefix="/api/lab", tags=["research-lab"])
+logger = logging.getLogger("aicompany.lab.routes")
+
 
 def _translate(error: repo.LabError) -> HTTPException:
     """Map expected domain failures to stable, non-leaking HTTP responses."""
@@ -58,22 +71,46 @@ def _values(request: BaseModel) -> dict[str, Any]:
     return request.model_dump(mode="json", exclude_unset=True)
 
 
-def _allowed_models() -> set[str]:
-    config = get_config()
-    return set(config.roles.values()) | set(config.pricing)
+def _inferred_connection(model: str) -> str:
+    """Map a legacy model prefix to its explicit built-in connection when possible."""
+    return get_connection("legacy", model=model).id
 
 
-def _agent_values(request: AgentCreate | AgentUpdate) -> dict[str, Any]:
+def _agent_values(
+    request: AgentCreate | AgentUpdate,
+    current: Any | None = None,
+) -> dict[str, Any]:
     values = _values(request)
-    if "model" not in values and isinstance(request, AgentUpdate):
+    touches_connection = "model" in values or "model_connection" in values
+    if isinstance(request, AgentUpdate) and not touches_connection:
         return values
-    if not values.get("model"):
-        values["model"] = get_config().roles["researcher"]
-    if values["model"] not in _allowed_models():
+
+    default_model = get_config().roles["researcher"]
+    reset_model = "model" in values and not values.get("model")
+    if isinstance(request, AgentCreate):
+        model = values.get("model") or default_model
+        connection_id = values.get("model_connection") or _inferred_connection(model)
+        values["model"] = model
+        values["model_connection"] = connection_id
+    else:
+        if current is None:
+            raise RuntimeError("current agent is required to validate a connection update")
+        model = default_model if reset_model else values.get("model", current.model)
+        if reset_model and "model_connection" not in values:
+            connection_id = _inferred_connection(model)
+            values["model_connection"] = connection_id
+        else:
+            connection_id = values.get("model_connection", current.model_connection)
+        if "model" in values:
+            values["model"] = model
+
+    try:
+        validate_connection_model(connection_id, model)
+    except ModelConnectionError as error:
         raise HTTPException(
             status_code=422,
-            detail="model must be one of the model IDs configured in backend/config.toml",
-        )
+            detail=str(error),
+        ) from error
     return values
 
 
@@ -101,7 +138,53 @@ async def create_agent(request: AgentCreate) -> dict[str, Any]:
 
 @router.patch("/agents/{agent_id}")
 async def update_agent(agent_id: str, request: AgentUpdate) -> dict[str, Any]:
-    return _dump(await _call(repo.update_agent, agent_id, _agent_values(request)))
+    current = await _call(repo.get_agent, agent_id)
+    return _dump(await _call(repo.update_agent, agent_id, _agent_values(request, current)))
+
+
+@router.get("/model-connections")
+async def list_model_connections() -> dict[str, Any]:
+    """Describe configured model routes without returning credentials or private paths."""
+    settings = get_settings()
+    return {
+        "mock_mode": settings.mock_llm,
+        "connections": [item.public_dict() for item in connection_catalog(settings)],
+    }
+
+
+class ConnectionTestRequest(BaseModel):
+    """One bounded model choice used to verify a configured connection."""
+
+    model: ModelId
+
+
+@router.post("/model-connections/{connection_id}/test")
+async def test_model_connection(
+    connection_id: ConnectionId,
+    request: ConnectionTestRequest,
+) -> dict[str, Any]:
+    """Run the provider adapter's small connection check and redact upstream failures."""
+    try:
+        return await provider_factory.test_connection(
+            get_settings(), connection_id, request.model
+        )
+    except ModelConnectionError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    except ValueError:
+        raise HTTPException(
+            status_code=422,
+            detail="invalid model connection request",
+        ) from None
+    except Exception as error:  # noqa: BLE001 - upstream details must not reach the browser
+        logger.warning(
+            "model connection test failed for %s (%s)",
+            connection_id,
+            type(error).__name__,
+        )
+        raise HTTPException(
+            status_code=502,
+            detail="model connection test failed; verify its setup and try again",
+        ) from None
 
 
 @router.post("/projects", status_code=status.HTTP_201_CREATED)

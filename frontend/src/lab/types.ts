@@ -37,11 +37,57 @@ export interface Agent {
   duties: string[];
   focus: string[];
   priorities: string[];
+  model_connection: string;
   model: string;
   status: EntityStatus;
   communication_scope: "isolated" | "department" | "organization" | string;
   created_at?: string;
   updated_at?: string;
+}
+
+export type ModelConnectionKind =
+  | "api_key"
+  | "subscription"
+  | "local"
+  | "custom"
+  | "legacy";
+
+export type ModelConnectionStatus = "ready" | "available" | "setup_required" | "error";
+
+export interface ModelChoice {
+  id: string;
+  label: string;
+}
+
+/** A secret-free description of one backend-owned route to a model. */
+export interface ModelConnection {
+  id: string;
+  name: string;
+  provider: string;
+  kind: ModelConnectionKind;
+  auth_mode: string;
+  status: ModelConnectionStatus;
+  egress: "local" | "remote" | "operator_defined";
+  billing: "api" | "subscription" | "none" | "custom";
+  configured: boolean;
+  models: ModelChoice[];
+  supports_custom_model: boolean;
+  detail: string;
+  setup: string;
+}
+
+export interface ModelConnectionCatalog {
+  mock_mode: boolean;
+  connections: ModelConnection[];
+}
+
+export interface ModelConnectionTestResult {
+  ok: boolean;
+  message: string;
+  connection_id: string;
+  model: string;
+  tokens_in: number;
+  tokens_out: number;
 }
 
 export interface Project {
@@ -490,6 +536,7 @@ export function normalizeLabSnapshot(value: unknown): LabSnapshot {
       duties: stringList(row.duties),
       focus: stringList(row.focus),
       priorities: stringList(row.priorities),
+      model_connection: text(row.model_connection, "legacy"),
       model: text(row.model, "default"),
       status: text(row.status, "active"),
       communication_scope: text(row.communication_scope, "isolated"),

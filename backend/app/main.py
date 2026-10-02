@@ -41,12 +41,13 @@ from app.lab.orchestrator import lab_orchestrator
 from app.lab.routes import router as lab_router
 from app.lab.source_routes import router as lab_source_router
 from app.oneshot import run_oneshot
+from app.providers.connections import connection_catalog
 from app.security import LocalOnlyMiddleware, websocket_is_trusted
 from app.settings import get_settings
 from app.state_vault import sync_loop as sync_state_vault_loop
 from app.state_vault import sync_vault
 from app.teach.explain import run_explain
-from app.terminal.pty_service import connect_pty, create_terminal
+from app.terminal.pty_service import TerminalSpawnError, connect_pty, create_terminal
 from app.workspaces import checks, github, manager, source_control
 from app.workspaces.diff import compute_diff
 from app.workspaces.files import build_tree, list_files, read_file
@@ -127,11 +128,19 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         vault_stop = asyncio.Event()
         vault_task = asyncio.create_task(sync_state_vault_loop(vault_stop))
 
-    # Soft guard: warn (don't crash) if we'd try to call real models with no key.
-    if not settings.mock_llm and not settings.has_any_key():
+    # Soft guard: API keys are only one possible live route. Account-plan CLIs,
+    # loopback Ollama, and custom endpoints are valid alternatives, so report the
+    # broader connection state instead of incorrectly requiring an API key.
+    live_connections = [
+        connection
+        for connection in connection_catalog(settings)
+        if connection.id not in {"mock", "legacy"} and connection.configured
+    ]
+    if not settings.mock_llm and not live_connections:
         logger.warning(
-            "MOCK_LLM=false but no provider API key is set — real model calls will fail. "
-            "Add a key to backend/.env or set MOCK_LLM=true."
+            "MOCK_LLM=false but no live model connection is configured — real model "
+            "calls will fail. Configure an API, account-plan CLI, local, or custom "
+            "route in backend/.env, or set MOCK_LLM=true."
         )
 
     mode = "MOCK (no keys, no cost)" if settings.mock_llm else "LIVE (real model calls)"
@@ -438,7 +447,12 @@ async def create_terminal_route(request: TerminalRequest) -> dict[str, str]:
         path = await asyncio.to_thread(manager.validated_workspace_path, workspace)
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
-    terminal_id = create_terminal(path)
+    try:
+        terminal_id = create_terminal(path)
+    except TerminalSpawnError as error:
+        # TerminalSpawnError contains only a fixed, recovery-oriented public message.
+        # Raw OS errors and local paths stay in the backend.
+        raise HTTPException(status_code=503, detail=str(error)) from error
     return {"terminal_id": terminal_id}
 
 

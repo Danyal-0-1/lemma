@@ -19,6 +19,8 @@ import type {
   LabRun,
   LabSnapshot,
   LabTemplate,
+  ModelConnectionCatalog,
+  ModelConnectionTestResult,
   ProjectDossier,
   ProjectPolicy,
   ResearchProtocol,
@@ -484,6 +486,22 @@ async function labRequest<T>(path: string, init?: RequestInit): Promise<T> {
 export async function getLabSnapshot(): Promise<LabSnapshot> {
   const raw = await labRequest<unknown>("/snapshot");
   return normalizeLabSnapshot(raw);
+}
+
+/** List secret-free model routes and the models currently offered by each route. */
+export async function getModelConnections(): Promise<ModelConnectionCatalog> {
+  return await labRequest("/model-connections");
+}
+
+/** Make one bounded inference through a route to prove auth and model availability. */
+export async function testModelConnection(
+  connectionId: string,
+  model: string,
+): Promise<ModelConnectionTestResult> {
+  return await labRequest(`/model-connections/${encodeURIComponent(connectionId)}/test`, {
+    method: "POST",
+    body: JSON.stringify({ model }),
+  });
 }
 
 /** Create one Lab entity. Payloads remain schema-shaped snake_case model inputs. */

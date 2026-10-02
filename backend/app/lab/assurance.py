@@ -23,6 +23,7 @@ from app.lab.integrity import (
     MAX_TASK_SOURCE_COUNT,
     agent_system_prompt,
     canonical_sha256,
+    connection_provenance_is_valid,
     model_call_provenance_sha256,
     project_execution_payload,
     protocol_content_sha256,
@@ -378,6 +379,20 @@ def _assess(db: Session, task: ResearchTask) -> dict[str, Any]:
         "A completed run is available.",
         "Run the task to completion before accepting its research.",
     )
+    frozen_agent = run.input_snapshot.get("agent") if run is not None else None
+    frozen_connection = (
+        run.input_snapshot.get("model_connection") if run is not None else None
+    )
+    legacy_connection = (
+        isinstance(frozen_agent, dict)
+        and "model_connection" not in frozen_agent
+        and frozen_connection is None
+    )
+    connection_snapshot_bound = legacy_connection or (
+        isinstance(frozen_agent, dict)
+        and isinstance(frozen_agent.get("model_connection"), str)
+        and connection_provenance_is_valid(frozen_connection)
+    )
     run_input_current = (
         run is not None
         and bool(run.input_snapshot)
@@ -385,8 +400,9 @@ def _assess(db: Session, task: ResearchTask) -> dict[str, Any]:
         and canonical_sha256(run.input_snapshot) == run.input_sha256
         and run.input_snapshot.get("task") == task_input_payload(task)
         and run.input_snapshot.get("project") == project_execution_payload(project)
-        and isinstance(run.input_snapshot.get("agent"), dict)
-        and run.input_snapshot["agent"].get("id") == task.assigned_agent_id
+        and isinstance(frozen_agent, dict)
+        and frozen_agent.get("id") == task.assigned_agent_id
+        and connection_snapshot_bound
     )
     _check(
         checks,
@@ -502,7 +518,6 @@ def _assess(db: Session, task: ResearchTask) -> dict[str, Any]:
             )
         )
     result_ids = [result.id for result in results]
-    frozen_agent = run.input_snapshot.get("agent") if run is not None else None
     frozen_agent_id = frozen_agent.get("id") if isinstance(frozen_agent, dict) else None
     frozen_model = frozen_agent.get("model") if isinstance(frozen_agent, dict) else None
     task_results_bound = bool(results) and all(
@@ -551,10 +566,18 @@ def _assess(db: Session, task: ResearchTask) -> dict[str, Any]:
     )
 
     def call_matches_run(call: ModelCall) -> bool:
+        connection_matches = (
+            call.connection_id == "legacy" and call.connection_snapshot == {}
+            if legacy_connection
+            else isinstance(frozen_connection, dict)
+            and call.connection_id == frozen_connection.get("id")
+            and call.connection_snapshot == frozen_connection
+        )
         return bool(
             call.project_id == task.project_id
             and call.agent_id == frozen_agent_id
             and call.model == frozen_model
+            and connection_matches
             and call.system_prompt == expected_system_prompt
             and call.user_prompt == expected_user_prompt
             and call.completed_at is not None

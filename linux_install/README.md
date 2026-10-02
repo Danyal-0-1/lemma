@@ -352,6 +352,21 @@ real model only when its exact configured model ID appears in the comma-separate
 Set `ENABLE_HOST_EXECUTION=true` only when you intend to enable the human-operated
 terminal and checks.
 
+The installed build supports the same four explicit research-model routes as the
+development build: metered API keys, official CLI account plans, loopback Ollama, and
+a custom OpenAI-compatible endpoint. Edit the private file shown by `lemma config`, set
+`MOCK_LLM=false`, then run `lemma restart`. Open **Settings → Models** to inspect and
+test a route; a test is a real request and can consume credit or plan allowance. Create
+or edit an agent in **Organization** to store its connection and model separately.
+
+For an account plan, sign in to the official CLI as the same Linux user before starting
+Lemma (`codex login`, `claude auth login`, or interactive `gemini`). The service PATH
+includes `~/.local/bin`; otherwise set `LEMMA_CODEX_EXECUTABLE`,
+`LEMMA_CLAUDE_EXECUTABLE`, or `LEMMA_GEMINI_EXECUTABLE` to the executable's absolute
+path. API keys are not subscriptions and account-plan adapters never fall back to them.
+Ollama must listen on the configured loopback URL. Remote custom endpoints require
+HTTPS and inherit their operator's billing, retention, and routing policy.
+
 Optional headless coding stays locked behind a second switch. It additionally needs
 `LEMMA_ENABLE_HEADLESS_CODING=true`, an absolute
 `LEMMA_HEADLESS_AGENT_EXECUTABLE`, and a separately approved plan in Operations.
@@ -385,7 +400,10 @@ research data.
   behind a network proxy or expose it to other users.
 - Provider keys live only in the private `.env` file. The service starts from a
   minimal environment, and terminal/check child processes do not inherit provider
-  keys, cloud credentials, or agent sockets.
+  keys, cloud credentials, or agent sockets. Account-plan CLI adapters receive the
+  same stripped environment, fixed arguments, disabled tools/customization, and
+  bounded input/output/time; vendor CLIs still make remote requests and cannot enforce
+  Lemma's normal provider-side output-token cap.
 - Mock mode sends no prompts to a model provider. With mock mode disabled, selected
   prompts and context leave the machine for the configured provider.
 - Host execution is disabled by default. When enabled, the terminal runs with the
@@ -427,11 +445,13 @@ Keep the automatic pre-migration backup until the new release has been verified,
 do not open a database written by a newer release with an older release unless that
 path has been tested.
 
-Lemma 0.3.0's assurance schema is an ordered pair of revisions:
-`0003_research_assurance` followed by `0004_research_assurance_hardening`. Release
-artifacts must retain both. The second revision is intentionally forward-only so a
-development database that already applied the first revision can upgrade without
-rewriting or pretending that earlier migration history never happened.
+Lemma 0.3.0's assurance and model-routing schema is an ordered chain of revisions:
+`0003_research_assurance`, `0004_research_assurance_hardening`, then
+`0005_model_connections`. Release artifacts must retain all three. Revision 0004 is
+intentionally forward-only so a development database that already applied 0003 can
+upgrade without rewriting or pretending that earlier migration history never
+happened; revision 0005 losslessly backfills legacy agents and model calls before
+new connection selections are persisted.
 
 ## Current limitations
 

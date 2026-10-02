@@ -35,6 +35,7 @@ from app.models import (
     ResearchTask,
 )
 from app.providers.base import ChatMessage, ModelProvider, StreamDone, TextDelta, Usage
+from app.providers.connections import ModelConnectionError, execution_connection
 from app.providers.factory import get_provider
 from app.settings import get_settings
 
@@ -58,8 +59,10 @@ class LabOrchestrator:
         self._background: set[asyncio.Task[None]] = set()
         self._run_tasks: dict[str, asyncio.Task[None]] = {}
 
-    def _provider(self) -> ModelProvider:
-        return self._provided_provider or get_provider(get_settings())
+    def _provider(self, agent: LabAgent) -> ModelProvider:
+        return self._provided_provider or get_provider(
+            get_settings(), agent.model_connection, agent.model
+        )
 
     async def _begin_task(self, task_id: str, instructions: str = "") -> LabRun:
         async with self._guard:
@@ -220,6 +223,21 @@ class LabOrchestrator:
         policy = await asyncio.to_thread(
             workflows.assert_model_allowed, run.project_id, agent.model
         )
+        settings = get_settings()
+        try:
+            connection = execution_connection(
+                agent.model_connection,
+                agent.model,
+                settings=settings,
+                require_configured=not settings.mock_llm,
+            )
+        except ModelConnectionError as error:
+            raise repo.LabValidationError(str(error)) from error
+        frozen_connection = run.input_snapshot.get("model_connection")
+        if run.task_id is not None and frozen_connection != connection.provenance():
+            raise repo.LabValidationError(
+                "the task's model connection changed after run creation; retry the run"
+            )
         address = self._address(run, agent_id=agent.id)
         self._emit(
             run,
@@ -248,13 +266,15 @@ class LabOrchestrator:
             agent_id=agent.id,
             stage=stage,
             model=agent.model,
+            connection_id=connection.id,
+            connection_snapshot=connection.provenance(),
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             policy=policy,
         )
         started = time.monotonic()
         try:
-            async for event in self._provider().stream_chat(
+            async for event in self._provider(agent).stream_chat(
                 agent.model, messages, max_output_tokens=output_limit
             ):
                 if isinstance(event, TextDelta):

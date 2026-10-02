@@ -29,6 +29,15 @@ ModelId = Annotated[
         pattern=r"^[A-Za-z0-9][A-Za-z0-9._:/-]*$",
     ),
 ]
+ConnectionId = Annotated[
+    str,
+    StringConstraints(
+        strip_whitespace=True,
+        min_length=1,
+        max_length=64,
+        pattern=r"^[a-z0-9][a-z0-9-]*$",
+    ),
+]
 
 
 class DepartmentKind(StrEnum):
@@ -119,6 +128,7 @@ class AgentCreate(BaseModel):
     duties: list[ShortText] = Field(default_factory=list, max_length=16)
     focus: list[ShortText] = Field(default_factory=list, max_length=16)
     priorities: list[ShortText] = Field(default_factory=list, max_length=16)
+    model_connection: ConnectionId | None = None
     model: ModelId | None = None
     status: AgentStatus = AgentStatus.ACTIVE
     communication_scope: CommunicationScope = CommunicationScope.DEPARTMENT
@@ -134,6 +144,7 @@ class AgentUpdate(PatchRequest):
     duties: list[ShortText] | None = Field(default=None, max_length=16)
     focus: list[ShortText] | None = Field(default=None, max_length=16)
     priorities: list[ShortText] | None = Field(default=None, max_length=16)
+    model_connection: ConnectionId | None = None
     model: ModelId | None = None
     status: AgentStatus | None = None
     communication_scope: CommunicationScope | None = None

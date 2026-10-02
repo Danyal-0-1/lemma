@@ -5,6 +5,7 @@ import { useState, type FormEvent } from "react";
 import { createLabEntity, updateLabEntity } from "../../lib/api";
 import { useAsyncAction } from "../../lib/asyncAction";
 import { Icon } from "../components/Icons";
+import { ModelRouteFields } from "../components/ModelConnections";
 import { AgentAvatar, Badge, Button, EmptyState, Field, Modal, StatusBadge } from "../components/UI";
 import { useLabStore } from "../store";
 import type { Agent, Department, DepartmentKind } from "../types";
@@ -43,7 +44,7 @@ function GroupForm({ onClose }: { onClose: () => void }) {
   );
 }
 
-function AgentForm({ onClose }: { onClose: () => void }) {
+export function AgentForm({ onClose }: { onClose: () => void }) {
   const departments = useLabStore((state) => state.snapshot.departments).filter((item) => item.status === "active");
   const refresh = useLabStore((state) => state.refresh);
   const selectedDepartmentId = useLabStore((state) => state.selectedDepartmentId);
@@ -55,6 +56,9 @@ function AgentForm({ onClose }: { onClose: () => void }) {
   const [focus, setFocus] = useState("");
   const [priorities, setPriorities] = useState("");
   const [scope, setScope] = useState("department");
+  const [modelConnection, setModelConnection] = useState("");
+  const [model, setModel] = useState("");
+  const [modelValid, setModelValid] = useState(false);
   const action = useAsyncAction({ fallbackError: "Could not create the agent." });
 
   async function submit(event: FormEvent) {
@@ -63,7 +67,7 @@ function AgentForm({ onClose }: { onClose: () => void }) {
       await createLabEntity<Agent>("agents", {
         ...(departmentId ? { department_id: departmentId } : {}), name, role, mission,
         duties: lines(duties), focus: lines(focus), priorities: lines(priorities),
-        communication_scope: scope,
+        communication_scope: scope, model_connection: modelConnection, model,
       });
       await refresh();
     });
@@ -76,17 +80,18 @@ function AgentForm({ onClose }: { onClose: () => void }) {
       <Field label="Role"><input required maxLength={160} value={role} onChange={(e) => setRole(e.target.value)} placeholder="Evidence Analyst" /></Field>
       <Field label="Home group"><select value={departmentId} onChange={(e) => setDepartmentId(e.target.value)}><option value="">Independent</option>{departments.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></Field>
       <Field label="Communication"><select value={scope} onChange={(e) => setScope(e.target.value)}><option value="isolated">Isolated</option><option value="department">Same group only</option><option value="organization">Organization-wide</option></select></Field>
+      <ModelRouteFields connectionId={modelConnection} model={model} onConnectionChange={setModelConnection} onModelChange={setModel} onValidityChange={setModelValid} />
       <div className="lab-field-span-2"><Field label="Mission" hint="The outcome this agent is responsible for."><textarea required maxLength={4000} rows={4} value={mission} onChange={(e) => setMission(e.target.value)} placeholder="Evaluate claims against supplied evidence and make uncertainty visible." /></Field></div>
       <Field label="Core duties" hint="One duty per line"><textarea rows={6} value={duties} onChange={(e) => setDuties(e.target.value)} placeholder={"Compare competing claims\nIdentify evidence gaps\nDraft a decision memo"} /></Field>
       <Field label="Must consider" hint="One focus area per line"><textarea rows={6} value={focus} onChange={(e) => setFocus(e.target.value)} placeholder={"Source quality\nCounter-evidence\nImplementation constraints"} /></Field>
       <div className="lab-field-span-2"><Field label="Priority order" hint="One priority per line; order matters."><textarea rows={4} value={priorities} onChange={(e) => setPriorities(e.target.value)} placeholder={"Accuracy before speed\nState uncertainty\nMake recommendations actionable"} /></Field></div>
       {action.error && <p className="lab-inline-error lab-field-span-2" role="alert">{action.error}</p>}
-      <div className="lab-form-actions lab-field-span-2"><Button onClick={onClose} disabled={action.pending}>Cancel</Button><Button type="submit" variant="primary" disabled={action.pending || !name.trim() || !role.trim() || !mission.trim()}>{action.pending ? "Creating…" : "Create agent"}</Button></div>
+      <div className="lab-form-actions lab-field-span-2"><Button onClick={onClose} disabled={action.pending}>Cancel</Button><Button type="submit" variant="primary" disabled={action.pending || !name.trim() || !role.trim() || !mission.trim() || !modelValid}>{action.pending ? "Creating…" : "Create agent"}</Button></div>
     </form>
   );
 }
 
-function AgentInspector({ agent }: { agent: Agent }) {
+export function AgentInspector({ agent }: { agent: Agent }) {
   const refresh = useLabStore((state) => state.refresh);
   const groups = useLabStore((state) => state.snapshot.departments);
   const [mission, setMission] = useState(agent.mission);
@@ -95,6 +100,9 @@ function AgentInspector({ agent }: { agent: Agent }) {
   const [priorities, setPriorities] = useState(agent.priorities.join("\n"));
   const [scope, setScope] = useState(agent.communication_scope);
   const [status, setStatus] = useState(agent.status);
+  const [modelConnection, setModelConnection] = useState(agent.model_connection);
+  const [model, setModel] = useState(agent.model);
+  const [modelValid, setModelValid] = useState(true);
   const [saved, setSaved] = useState(false);
   const action = useAsyncAction({ fallbackError: "Could not save the duty card." });
 
@@ -103,7 +111,7 @@ function AgentInspector({ agent }: { agent: Agent }) {
     const result = await action.run(async () => {
       await updateLabEntity("agents", agent.id, {
         mission, duties: lines(duties), focus: lines(focus), priorities: lines(priorities),
-        communication_scope: scope, status,
+        communication_scope: scope, status, model_connection: modelConnection, model,
       });
       await refresh();
     });
@@ -120,12 +128,12 @@ function AgentInspector({ agent }: { agent: Agent }) {
         <Field label="Duties"><textarea rows={6} value={duties} onChange={(e) => setDuties(e.target.value)} /></Field>
         <Field label="Must consider"><textarea rows={6} value={focus} onChange={(e) => setFocus(e.target.value)} /></Field>
         <Field label="Priorities"><textarea rows={5} value={priorities} onChange={(e) => setPriorities(e.target.value)} /></Field>
+        <ModelRouteFields connectionId={modelConnection} model={model} onConnectionChange={setModelConnection} onModelChange={setModel} onValidityChange={setModelValid} preserveSavedRoute />
         <Field label="Communication policy"><select value={scope} onChange={(e) => setScope(e.target.value)}><option value="isolated">Isolated</option><option value="department">Same group only</option><option value="organization">Organization-wide</option></select></Field>
         <Field label="Availability"><select value={status} onChange={(e) => setStatus(e.target.value)}><option value="active">Active</option><option value="paused">Paused</option><option value="archived">Archived</option></select></Field>
-        <div className="lab-model-row"><span>Model</span><code>{agent.model}</code></div>
         {action.error && <p className="lab-inline-error" role="alert">{action.error}</p>}{saved && <p className="lab-inline-success" role="status">Duty card saved.</p>}
       </div>
-      <footer className="lab-inspector-footer"><Button variant="primary" onClick={() => void save()} disabled={action.pending}>{action.pending ? "Saving…" : "Save duty card"}</Button></footer>
+      <footer className="lab-inspector-footer"><Button variant="primary" onClick={() => void save()} disabled={action.pending || !modelValid}>{action.pending ? "Saving…" : "Save duty card"}</Button></footer>
     </aside>
   );
 }

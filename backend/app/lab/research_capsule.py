@@ -22,6 +22,8 @@ from app.lab.integrity import (
     agent_system_prompt,
     canonical_json,
     canonical_sha256,
+    connection_provenance_is_valid,
+    legacy_model_call_provenance_sha256,
     model_call_provenance_sha256,
     project_execution_payload,
     protocol_content_sha256,
@@ -931,6 +933,21 @@ def verify_capsule(capsule: dict[str, Any]) -> dict[str, Any]:
             frozen_agent = (
                 input_snapshot.get("agent") if isinstance(input_snapshot, dict) else None
             )
+            frozen_connection = (
+                input_snapshot.get("model_connection")
+                if isinstance(input_snapshot, dict)
+                else None
+            )
+            legacy_connection = (
+                isinstance(frozen_agent, dict)
+                and "model_connection" not in frozen_agent
+                and frozen_connection is None
+            )
+            connection_well_formed = legacy_connection or (
+                isinstance(frozen_agent, dict)
+                and isinstance(frozen_agent.get("model_connection"), str)
+                and connection_provenance_is_valid(frozen_connection)
+            )
             frozen_protocol = (
                 input_snapshot.get("protocol") if isinstance(input_snapshot, dict) else None
             )
@@ -943,6 +960,7 @@ def verify_capsule(capsule: dict[str, Any]) -> dict[str, Any]:
                 or not isinstance(frozen_agent, dict)
                 or frozen_agent.get("id") != frozen_task.get("assigned_agent_id")
                 or not isinstance(frozen_agent.get("model"), str)
+                or not connection_well_formed
                 or not validate_frozen_packet(run)
             ):
                 reference_error(f"task run {run.get('id')} has malformed frozen inputs")
@@ -1101,9 +1119,21 @@ def verify_capsule(capsule: dict[str, Any]) -> dict[str, Any]:
             continue
         frozen_agent = run_input.get("agent")
         frozen_task = run_input.get("task")
+        frozen_connection = run_input.get("model_connection")
+        legacy_connection = (
+            isinstance(frozen_agent, dict)
+            and "model_connection" not in frozen_agent
+            and frozen_connection is None
+        )
+        connection_well_formed = legacy_connection or (
+            isinstance(frozen_agent, dict)
+            and isinstance(frozen_agent.get("model_connection"), str)
+            and connection_provenance_is_valid(frozen_connection)
+        )
         if (
             not isinstance(frozen_agent, dict)
             or not isinstance(frozen_task, dict)
+            or not connection_well_formed
             or not isinstance(run_input.get("source_packet"), list)
             or not validate_frozen_packet(run)
         ):
@@ -1214,6 +1244,32 @@ def verify_capsule(capsule: dict[str, Any]) -> dict[str, Any]:
             call = model_calls.get(str(call_snapshot.get("id"))) if isinstance(
                 call_snapshot, dict
             ) else None
+            connection_matches = bool(
+                call is not None
+                and (
+                    call.get("connection_id") == "legacy"
+                    and call.get("connection_snapshot") == {}
+                    if legacy_connection
+                    else isinstance(frozen_connection, dict)
+                    and call.get("connection_id") == frozen_connection.get("id")
+                    and call.get("connection_snapshot") == frozen_connection
+                )
+            )
+            hash_matches = bool(
+                call is not None
+                and isinstance(call_snapshot, dict)
+                and (
+                    model_call_provenance_sha256(call)
+                    == call_snapshot.get("provenance_sha256")
+                    or (
+                        legacy_connection
+                        and call.get("connection_id") == "legacy"
+                        and call.get("connection_snapshot") == {}
+                        and legacy_model_call_provenance_sha256(call)
+                        == call_snapshot.get("provenance_sha256")
+                    )
+                )
+            )
             call_checks = {
                 "record": call is not None,
                 "run": call is not None and call.get("run_id") == run.get("id"),
@@ -1221,6 +1277,7 @@ def verify_capsule(capsule: dict[str, Any]) -> dict[str, Any]:
                 and call.get("agent_id") == frozen_agent.get("id"),
                 "model": call is not None
                 and call.get("model") == frozen_agent.get("model"),
+                "connection": connection_matches,
                 "stage": call is not None and call.get("stage") == "task_result",
                 "status": call is not None and call.get("status") == "completed",
                 "completed_at": call is not None
@@ -1235,9 +1292,7 @@ def verify_capsule(capsule: dict[str, Any]) -> dict[str, Any]:
                 "system_prompt": call is not None
                 and call.get("system_prompt") == expected_system,
                 "user_prompt": call is not None and call.get("user_prompt") == expected_user,
-                "hash": call is not None
-                and model_call_provenance_sha256(call)
-                == call_snapshot.get("provenance_sha256"),
+                "hash": hash_matches,
             }
             if not all(call_checks.values()):
                 failures = ", ".join(

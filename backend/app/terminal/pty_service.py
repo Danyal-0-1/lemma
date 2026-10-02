@@ -29,11 +29,14 @@ import logging
 import os
 import pty
 import secrets
+import select
 import signal
 import struct
+import sys
 import termios
 import threading
 import time
+from pathlib import Path
 
 from fastapi import WebSocket
 from starlette.websockets import WebSocketDisconnect, WebSocketState
@@ -49,6 +52,101 @@ CLAIM_TTL_SECONDS = 30
 MAX_OUTPUT_CHUNKS = 256
 MAX_INPUT_FRAME_BYTES = 64 * 1024
 MAX_CONTROL_FRAME_CHARS = 4_096
+SHELL_START_TIMEOUT_SECONDS = 2.0
+
+_SPAWN_ERROR_MESSAGES = {
+    "workspace_unavailable": (
+        "The workspace is unavailable. Reopen or restore it, then try the terminal again."
+    ),
+    "shell_unavailable": (
+        "No supported interactive shell is available. Install bash or zsh, then restart Lemma."
+    ),
+    "pty_unavailable": (
+        "The terminal could not start. Check that this macOS or Linux system supports PTYs, "
+        "then restart Lemma."
+    ),
+    "shell_start_failed": (
+        "The selected shell could not start. Check your bash or zsh installation, then retry."
+    ),
+}
+
+
+class TerminalSpawnError(RuntimeError):
+    """A terminal startup failure whose message is safe to return to the browser.
+
+    Callers choose a fixed reason instead of interpolating an ``OSError``. This keeps
+    credentials and local filesystem paths out of API responses while still telling
+    the operator how to recover.
+    """
+
+    def __init__(self, reason: str) -> None:
+        try:
+            message = _SPAWN_ERROR_MESSAGES[reason]
+        except KeyError as error:  # pragma: no cover - internal programming error
+            raise ValueError("unknown terminal spawn error") from error
+        self.reason = reason
+        super().__init__(message)
+
+
+def _default_shell_candidates() -> tuple[str, ...]:
+    """Return common shell locations in the platform's usual preference order."""
+    if sys.platform == "darwin":
+        return ("/bin/zsh", "/bin/bash", "/usr/bin/zsh", "/usr/bin/bash")
+    return ("/bin/bash", "/usr/bin/bash", "/bin/zsh", "/usr/bin/zsh")
+
+
+def _is_supported_shell(path: str) -> bool:
+    """Accept only an absolute, executable bash/zsh file (including safe symlinks)."""
+    candidate = Path(path)
+    if not candidate.is_absolute() or candidate.name not in {"bash", "zsh"}:
+        return False
+    try:
+        return candidate.is_file() and os.access(candidate, os.X_OK)
+    except OSError:
+        return False
+
+
+def _resolve_shell() -> str:
+    """Resolve ``$SHELL`` with portable bash/zsh fallbacks for macOS and Linux."""
+    configured = os.environ.get("SHELL", "").strip()
+    if configured and _is_supported_shell(configured):
+        return configured
+    if configured:
+        # Deliberately do not log the configured value: environment values and local
+        # filesystem layout do not belong in logs or browser-visible errors.
+        logger.warning("configured SHELL is unavailable or unsupported; using a fallback")
+
+    for candidate in _default_shell_candidates():
+        if _is_supported_shell(candidate):
+            return candidate
+    raise TerminalSpawnError("shell_unavailable")
+
+
+def _shell_argv(shell: str) -> list[str]:
+    """Start a clean interactive shell without profiles that could restore secrets."""
+    if os.path.basename(shell) == "zsh":
+        return [shell, "-f"]
+    return [shell, "--noprofile", "--norc"]
+
+
+def _close_fd(fd: int) -> None:
+    try:
+        os.close(fd)
+    except OSError:
+        pass
+
+
+def _reap_failed_spawn(pid: int, master_fd: int) -> None:
+    """Best-effort cleanup for a child that failed before terminal registration."""
+    _close_fd(master_fd)
+    try:
+        os.killpg(pid, signal.SIGKILL)
+    except (OSError, ProcessLookupError):
+        pass
+    try:
+        os.waitpid(pid, 0)
+    except (ChildProcessError, OSError):
+        pass
 
 
 def _set_winsize(fd: int, rows: int, cols: int) -> None:
@@ -126,31 +224,77 @@ def create_terminal(workspace_path: str) -> str:
     Exists so the /pty socket has a shell to connect to. The child execs the user's
     $SHELL with the SANITIZED env (see the billing warning above).
     """
+    workspace = Path(workspace_path)
+    try:
+        workspace_available = workspace.is_dir() and os.access(workspace, os.R_OK | os.X_OK)
+    except OSError:
+        workspace_available = False
+    if not workspace_available:
+        raise TerminalSpawnError("workspace_unavailable")
+
     terminal_id = f"pty_{secrets.token_urlsafe(32)}"
-    shell = os.environ.get("SHELL", "/bin/bash")
+    shell = _resolve_shell()
     env = sanitized_env(workspace_path)  # ⚠️ allowlists child env — see app/shell_env.py
+    # When an invalid configured shell falls back, children must see the shell that
+    # actually started rather than the stale value from the parent environment.
+    env["SHELL"] = shell
+
+    # The close-on-exec pipe lets the parent distinguish a successful exec from the
+    # old failure mode where the child silently exited 127 and the browser stayed blank.
+    try:
+        error_read_fd, error_write_fd = os.pipe()
+    except OSError as error:
+        logger.warning("could not allocate terminal startup pipe: %s", type(error).__name__)
+        raise TerminalSpawnError("pty_unavailable") from error
 
     # pty.fork() forks; in the CHILD it wires stdio to the PTY and returns pid 0.
-    pid, master_fd = pty.fork()
+    try:
+        pid, master_fd = pty.fork()
+    except OSError as error:
+        _close_fd(error_read_fd)
+        _close_fd(error_write_fd)
+        logger.warning("could not allocate PTY: %s", type(error).__name__)
+        raise TerminalSpawnError("pty_unavailable") from error
     if pid == 0:
         # ---- child process ----
+        _close_fd(error_read_fd)
         try:
             os.chdir(workspace_path)
-            shell_name = os.path.basename(shell)
-            if shell_name == "zsh":
-                argv = [shell, "-f"]  # do not source a profile that may re-export secrets
-            elif shell_name == "bash":
-                argv = [shell, "--noprofile", "--norc"]
-            else:
-                argv = [shell]
-            os.execvpe(shell, argv, env)  # replaces the child with the shell
-        except Exception:  # noqa: BLE001 — child must never fall through to app code
+            os.execvpe(shell, _shell_argv(shell), env)  # replaces child with shell
+        except BaseException:  # noqa: BLE001 — child must never fall through to app code
+            try:
+                os.write(error_write_fd, b"failed")
+            except OSError:
+                pass
             os._exit(127)
 
     # ---- parent process ----
+    _close_fd(error_write_fd)
+    try:
+        ready, _, _ = select.select(
+            [error_read_fd],
+            [],
+            [],
+            SHELL_START_TIMEOUT_SECONDS,
+        )
+        startup_error = os.read(error_read_fd, 16) if ready else b"timeout"
+    except OSError:
+        startup_error = b"failed"
+    finally:
+        _close_fd(error_read_fd)
+    if startup_error:
+        _reap_failed_spawn(pid, master_fd)
+        logger.warning("terminal shell failed before startup completed")
+        raise TerminalSpawnError("shell_start_failed")
+
     # Non-blocking so our reader never stalls the event loop when there's no output.
-    flags = fcntl.fcntl(master_fd, fcntl.F_GETFL)
-    fcntl.fcntl(master_fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+    try:
+        flags = fcntl.fcntl(master_fd, fcntl.F_GETFL)
+        fcntl.fcntl(master_fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+    except OSError as error:
+        _reap_failed_spawn(pid, master_fd)
+        logger.warning("could not configure PTY: %s", type(error).__name__)
+        raise TerminalSpawnError("pty_unavailable") from error
 
     terminal = PtyTerminal(terminal_id, pid, master_fd, workspace_path)
     def expire_unclaimed() -> None:

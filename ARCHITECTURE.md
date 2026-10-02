@@ -22,7 +22,7 @@ single-user application; it is not a remotely deployable multi-tenant service.
 │                                                                              │
 │ Research Lab: protocols · sources · claims · assurance · capsules · evals  │
 │   LabOrchestrator: prompt-only turns · bounded meetings · durable jobs       │
-│   ModelProvider: Mock or LiteLLM → configured provider                      │
+│   ModelProvider: Mock │ API key │ account CLI │ Ollama │ custom endpoint   │
 │                                                                              │
 │ Original Workbench: ideation → approved Spec → workspace → review           │
 │ Host tools (off by default): PTY terminal + argv checks + Git workspace      │
@@ -61,8 +61,10 @@ are not rendered.
 ## Two provider layers (never conflated)
 
 1. **`ModelProvider`** *(M2)* — raw chat completions for the crew and the Explain/mentor
-   feature. Async + streaming, with LiteLLM underneath so `deepseek/…`, `anthropic/…`,
-   `openai/…`, and local OpenAI-compatible endpoints are one interface. A `MockProvider`
+   feature. Async + streaming, with one explicit connection per research agent:
+   metered provider API keys, official account-plan CLIs, loopback Ollama, or a custom
+   OpenAI-compatible endpoint. LiteLLM implements API/local/custom transports;
+   fixed-argument bounded adapters implement account-plan transports. A `MockProvider`
    implements the same shape for zero-cost development.
 2. **`AgentProvider`** *(M5/M9)* — coding agents that edit files and run commands. The
    default remains the PTY terminal where the user drives an agent interactively. An
@@ -71,6 +73,36 @@ are not rendered.
    workspace-root validation, bounded time/output, and process-group cleanup. It is
    still a trusted host process—not a sandbox—and its capability list records approved
    intent rather than enforcing OS permissions.
+
+### Research model connection flow
+
+```text
+backend/.env secret/endpoint/CLI path
+        │ (server only)
+        ▼
+redacted ConnectionDescriptor ──► Settings → Models status/test
+        │
+        ├── agent duty card stores: connection ID + model ID
+        ▼
+task start freezes: agent + actual connection fingerprint + sources/protocol
+        ▼
+factory ──► Mock | LiteLLM API/Ollama/custom | bounded official CLI
+        ▼
+ModelCall stores: route snapshot + model + exact prompts + usage/outcome/hash
+```
+
+The connection ID determines transport, authentication, billing class, and egress;
+the model ID identifies the model within that transport. The factory never silently
+falls back between API-key and account-plan authentication. Credentials and private
+endpoint/executable paths never enter the browser or database. Provenance keeps only a
+SHA-256 target fingerprint. When global mock mode is enabled, the duty card remains
+unchanged but the run freezes and records the mock as the route that actually executed.
+
+Account-plan model adapters are not coding-agent adapters: their known tools, plugins,
+custom instructions, MCP, and workspace access are disabled, and they run in an empty
+temporary directory with bounded I/O and lifetime. They still contact the vendor and
+remain sensitive to CLI-version changes. Their upstream generation cannot be capped by
+Lemma's normal `max_output_tokens`; the byte/time boundary is enforced locally.
 
 **Why no CrewAI/LangGraph:** the ideation loop is a sequential state machine of ~4 steps
 with one human gate. A framework would hide exactly the mechanics this codebase exists to
@@ -211,7 +243,9 @@ authorship; release minisign and research-capsule verification solve different p
   resizable three-panel layout, role-colored streaming Conversation, live StatusBar dot.
 - **M2:** the ModelProvider layer. `providers/base.py` is the interface
   (`stream_chat` yields `TextDelta`… then `StreamDone`); `mock_provider.py` (free) and
-  `litellm_provider.py` (real, with retry/usage) implement it; `factory.py` picks one.
+  `litellm_provider.py` (API/Ollama/custom, with retry/usage) plus the bounded
+  subscription-CLI adapter implement it; `connections.py` validates/redacts routes and
+  `factory.py` selects exactly one.
   `config.py` loads `config.toml`; `db.py`/`models.py` add SQLite + `CostRecord`;
   `cost.py` prices+persists+summarizes; `oneshot.py` + `POST /api/oneshot` stream a
   single Generator turn and move the cost meter. Providers are a PURE layer — they never

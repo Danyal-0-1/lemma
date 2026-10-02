@@ -144,6 +144,8 @@ def _completed_result(engine, agent_id: str, project_id: str, task_id: str, star
         run_id=run.id,
         agent_id=agent_id,
         stage="task_result",
+        connection_id=run.input_snapshot["model_connection"]["id"],
+        connection_snapshot=run.input_snapshot["model_connection"],
         model="deepseek/deepseek-chat",
         system_prompt=LabOrchestrator._agent_prompt(
             agent, str(run.input_snapshot["task"]["objective"])
@@ -479,6 +481,9 @@ async def test_task_execution_uses_frozen_agent_model_after_agent_edit(
         ).one()
     assert stored_run is not None and stored_run.status == "completed"
     assert stored_run.input_snapshot["agent"]["model"] == original_agent.model
+    assert stored_run.input_snapshot["model_connection"]["id"] == "mock"
+    assert call.connection_id == "mock"
+    assert call.connection_snapshot == stored_run.input_snapshot["model_connection"]
     assert call.model == original_agent.model
 
 
@@ -664,6 +669,24 @@ def test_capsule_is_deterministic_offline_verifiable_and_exposed_by_api(
     acceptance["snapshot_sha256"] = canonical_sha256(acceptance["snapshot_json"])
     tampered_call["manifest_sha256"] = canonical_sha256(tampered_call["manifest"])
     assert research_capsule.verify_capsule(tampered_call)["valid"] is False
+
+    tampered_connection = copy.deepcopy(capsule)
+    call = tampered_connection["manifest"]["model_calls"][0]
+    call["connection_id"] = "openai-api"
+    acceptance = tampered_connection["manifest"]["assurance_acceptances"][0]
+    acceptance["snapshot_json"]["model_calls"][0]["provenance_sha256"] = (
+        research_capsule.model_call_provenance_sha256(call)
+    )
+    acceptance["snapshot_sha256"] = canonical_sha256(acceptance["snapshot_json"])
+    tampered_connection["manifest_sha256"] = canonical_sha256(
+        tampered_connection["manifest"]
+    )
+    invalid_connection = research_capsule.verify_capsule(tampered_connection)
+    assert invalid_connection["valid"] is False
+    assert any(
+        "model provenance: connection" in error
+        for error in invalid_connection["errors"]
+    )
 
     tampered_packet = copy.deepcopy(capsule)
     run = tampered_packet["manifest"]["runs"][0]

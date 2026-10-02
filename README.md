@@ -208,28 +208,55 @@ Diff / Terminal / Checks.
 
 ## Using real models (optional)
 
-1. Get a [DeepSeek](https://platform.deepseek.com/) API key (cheapest; the crew's default).
-2. Put it in `backend/.env`:
-   ```bash
-   DEEPSEEK_API_KEY=sk-...
-   MOCK_LLM=false
-   ```
-3. In **Operations → Policy**, explicitly classify the project for egress. For the
-   remote DeepSeek default, choose **Confidential** and allowlist
-   `deepseek/deepseek-chat` (or choose **Public**). The secure `local_only` default
-   intentionally rejects remote models.
-4. Restart `make dev`. The cost meter in the status bar now tracks real spend.
+Lemma makes the route explicit; it never treats a chat subscription as an API key or
+silently falls back between them.
+
+| Connection shown in Settings | Authentication | Billing / data path |
+|---|---|---|
+| OpenAI, Anthropic, Gemini, or DeepSeek **API** | key in `backend/.env` | separately metered provider API; remote egress |
+| ChatGPT, Claude, or Google AI **account plan** | existing login in the official Codex, Claude Code, or Gemini CLI | eligible plan allowance; remote egress; no API-key fallback |
+| **Ollama local** | none | loopback-only runtime; no provider billing |
+| **Custom OpenAI-compatible** | optional key | determined by that server's operator; local or remote |
+
+To connect one:
+
+1. Copy the relevant variables from `backend/.env.example` into `backend/.env`.
+   For an API route, add its key. For Ollama, list exact `ollama/...` model IDs. For a
+   custom endpoint, provide its URL and `openai/...` model IDs.
+2. For an account-plan route, install the official CLI and sign in from your normal
+   terminal first: `codex login`, `claude auth login`, or run `gemini` and choose
+   **Sign in with Google**. If `command -v codex`, `claude`, or `gemini` cannot find it,
+   set the corresponding `LEMMA_*_EXECUTABLE` to its absolute path.
+3. Set `MOCK_LLM=false`, restart `make dev`, then open **Settings → Models**. Each card
+   identifies its auth mode, billing boundary, egress, and readiness. **Test
+   connection** makes one real small request and may consume API credit or plan usage.
+4. Open **Organization → New agent** and choose the connection and model on the duty
+   card. The agent stores both values; every task run records the actual route's
+   redacted fingerprint alongside the exact model and prompts.
+5. In **Operations → Policy**, explicitly classify remote work. **Confidential** needs
+   an allowlist; **local_only** accepts only mock mode or exact IDs in
+   `LEMMA_LOCAL_MODEL_IDS`. A name such as `ollama/...` alone does not prove locality.
+
+`MOCK_LLM=true` remains a global safe override: research runs use the local mock even
+when a duty card names a live route, and provenance records that the mock actually ran.
+The account-plan adapters run in an empty temporary directory with tools/customization
+disabled and bounded input, output, and wall time. Unlike normal API requests, their
+vendor CLIs do not offer a provider-side `max_output_tokens` guarantee, so plan usage
+is only known after the process returns. Direct **Sign in with ChatGPT** OAuth is a
+separate registered integration; this repository currently uses the installed Codex
+CLI's account session instead.
 
 ### ⚠️ The billing warning (read this once)
 
-**Never `export ANTHROPIC_API_KEY` (or `OPENAI_API_KEY`) in the shell where you run
-Claude Code or this app.** If that variable is set, the `claude` CLI bills your
-**API account per token** instead of using your **subscription**. This app:
+Do not export provider API keys into the shell where you sign in to an account-plan
+CLI. An ambient key can select API authentication and metered API billing instead of
+the account session you intended. This app:
 
-- keeps its keys in `backend/.env` (loaded into the backend process only), and
+- keeps API keys in `backend/.env` (loaded into the backend process only and passed
+  directly to the selected API request), and
 - constructs a minimal child-process environment instead of copying the backend's
   environment. Provider keys, cloud tokens, credential variables, and agent sockets
-  stay out of the embedded terminal and checks runner.
+  stay out of the embedded terminal, checks runner, and account-plan CLI adapters.
 
 This is enforced in `backend/app/terminal/pty_service.py` (and `backend/app/shell_env.py`,
 which the Checks runner shares).
@@ -290,10 +317,12 @@ multi-user deployment.
   port `5173` only when Vite is also already running.
 - **`uv: command not found`** — the installer put it in `~/.local/bin`. Restart your
   shell, or `source $HOME/.local/bin/env`.
-- **Terminal and Checks say “host tools locked”** — this is the secure default. Set
-  `ENABLE_HOST_EXECUTION=true` in `backend/.env` and restart only if you intend to run
-  trusted local commands. The terminal talks over `ws://127.0.0.1:8000/pty/...` and
-  reaps its complete process group on disconnect.
+- **Terminal and Checks say “host tools locked”** — this is the secure default. Stop
+  `make dev`, set `ENABLE_HOST_EXECUTION=true` in `backend/.env`, and start `make dev`
+  again only if you intend to run trusted local commands. Create or select an active
+  Workbench workspace before opening Terminal. The panel now reports connection/start
+  failures and offers **Retry**; its shell is resolved from executable bash/zsh paths
+  on both macOS and Linux and its complete process group is reaped on disconnect.
 - **An approved headless job still will not run** — confirm both execution switches,
   an active recorded workspace, and an absolute executable path. The executable must
   exist, be executable, and not be world-writable. Approval alone never unlocks M9.
@@ -309,8 +338,11 @@ multi-user deployment.
   clear error instead of leaving the frontend running when its backend has exited.
 - **The `[vite] failed to connect to websocket` console error** is Vite's own dev-server
   HMR socket, not this app — harmless.
-- **Real models fail with a 401/auth error** — you set `MOCK_LLM=false` without a valid
-  key for the model in `config.toml`. Add the key to `backend/.env` or set `MOCK_LLM=true`.
+- **A model route fails** — open **Settings → Models** and read that route's setup and
+  status. API routes need the matching key, account-plan routes need an authenticated
+  official CLI visible to the backend, Ollama must be running on the configured
+  loopback URL, and custom endpoints must be reachable. Test the exact route/model;
+  upstream details stay in backend logs rather than being exposed to the browser.
 - **A real research run is blocked by project policy** — `local_only` deliberately
   rejects remote egress. For a verified on-device endpoint, add its exact configured
   model ID to `LEMMA_LOCAL_MODEL_IDS`; otherwise explicitly choose **Confidential** with

@@ -133,6 +133,7 @@ required_bundle_files=(
   share/lemma/app/backend/app/lab/source_routes.py
   share/lemma/app/backend/migrations/versions/0003_research_assurance.py
   share/lemma/app/backend/migrations/versions/0004_research_assurance_hardening.py
+  share/lemma/app/backend/migrations/versions/0005_model_connections.py
   share/lemma/env.default
   share/lemma/web/index.html
   share/applications/io.lemma.Lemma.desktop.in

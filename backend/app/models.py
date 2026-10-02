@@ -145,6 +145,7 @@ class LabAgent(SQLModel, table=True):
     duties: list[str] = Field(default_factory=list, sa_column=Column(JSON, nullable=False))
     focus: list[str] = Field(default_factory=list, sa_column=Column(JSON, nullable=False))
     priorities: list[str] = Field(default_factory=list, sa_column=Column(JSON, nullable=False))
+    model_connection: str = "legacy"
     model: str
     status: str = "active"  # active | paused | archived
     communication_scope: str = "department"  # isolated | department | organization
@@ -532,6 +533,10 @@ class ModelCall(SQLModel, table=True):
     run_id: str | None = Field(default=None, foreign_key="lab_runs.id", index=True)
     agent_id: str | None = Field(default=None, foreign_key="lab_agents.id", index=True)
     stage: str = Field(index=True)
+    connection_id: str = "legacy"
+    connection_snapshot: dict[str, object] = Field(
+        default_factory=dict, sa_column=Column(JSON, nullable=False)
+    )
     model: str = Field(index=True)
     system_prompt: str
     user_prompt: str

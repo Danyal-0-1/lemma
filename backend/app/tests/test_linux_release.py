@@ -141,6 +141,12 @@ def test_linux_configuration_exposes_local_model_attestation_safely() -> None:
     assert "ENABLE_HOST_EXECUTION=false" in defaults
     assert "LEMMA_ENABLE_HEADLESS_CODING=false" in defaults
     assert "LEMMA_LOCAL_MODEL_IDS=" in defaults
+    assert "GEMINI_API_KEY=" in defaults
+    assert "LEMMA_OLLAMA_BASE_URL=http://127.0.0.1:11434" in defaults
+    assert "LEMMA_CUSTOM_OPENAI_BASE_URL=" in defaults
+    assert "LEMMA_CODEX_EXECUTABLE=" in defaults
+    assert "LEMMA_CLAUDE_EXECUTABLE=" in defaults
+    assert "LEMMA_GEMINI_EXECUTABLE=" in defaults
 
 
 def test_packaged_capsule_verifier_runs_without_server_or_database(tmp_path: Path) -> None:
@@ -250,6 +256,7 @@ def test_research_assurance_payload_is_mandatory_in_linux_artifacts() -> None:
         "share/lemma/app/backend/alembic.ini",
         "share/lemma/app/backend/migrations/versions/0003_research_assurance.py",
         "share/lemma/app/backend/migrations/versions/0004_research_assurance_hardening.py",
+        "share/lemma/app/backend/migrations/versions/0005_model_connections.py",
         "share/lemma/app/backend/migrations/versions",
     )
     for script_name in ("build.sh", "build-deb.sh", "install.sh"):
@@ -513,6 +520,17 @@ def _fixture_bundle(bundle: Path) -> None:
             / "migrations"
             / "versions"
             / "0004_research_assurance_hardening.py"
+        ).read_text(),
+    )
+    _write(
+        bundle,
+        "share/lemma/app/backend/migrations/versions/0005_model_connections.py",
+        (
+            REPOSITORY_ROOT
+            / "backend"
+            / "migrations"
+            / "versions"
+            / "0005_model_connections.py"
         ).read_text(),
     )
     _write(bundle, "share/lemma/python/.keep", "")

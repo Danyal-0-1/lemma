@@ -57,6 +57,34 @@ class Settings(BaseSettings):
     deepseek_api_key: str = ""
     anthropic_api_key: str = ""
     openai_api_key: str = ""
+    gemini_api_key: str = ""
+
+    # --- Explicit research-model connections ---
+    # Secrets stay in backend/.env and are passed directly to the selected adapter.
+    # They are never copied into os.environ or a child process.
+    ollama_base_url: str = Field(
+        default="http://127.0.0.1:11434",
+        validation_alias="LEMMA_OLLAMA_BASE_URL",
+    )
+    ollama_models: str = Field(default="", validation_alias="LEMMA_OLLAMA_MODELS")
+    custom_openai_base_url: str = Field(
+        default="", validation_alias="LEMMA_CUSTOM_OPENAI_BASE_URL"
+    )
+    custom_openai_api_key: str = Field(
+        default="", validation_alias="LEMMA_CUSTOM_OPENAI_API_KEY"
+    )
+    custom_openai_models: str = Field(
+        default="", validation_alias="LEMMA_CUSTOM_OPENAI_MODELS"
+    )
+    codex_executable: str = Field(default="", validation_alias="LEMMA_CODEX_EXECUTABLE")
+    claude_executable: str = Field(default="", validation_alias="LEMMA_CLAUDE_EXECUTABLE")
+    gemini_executable: str = Field(default="", validation_alias="LEMMA_GEMINI_EXECUTABLE")
+    subscription_timeout_seconds: int = Field(
+        default=180,
+        ge=30,
+        le=600,
+        validation_alias="LEMMA_SUBSCRIPTION_TIMEOUT_SECONDS",
+    )
 
     # --- Behaviour ---
     # Mock mode is ON by default: the app runs fully with zero keys and zero cost.
@@ -122,7 +150,13 @@ class Settings(BaseSettings):
         Used by the startup check that warns when MOCK_LLM=false but no key exists,
         so the user gets a clear message instead of a confusing 401 later.
         """
-        return bool(self.deepseek_api_key or self.anthropic_api_key or self.openai_api_key)
+        return bool(
+            self.deepseek_api_key
+            or self.anthropic_api_key
+            or self.openai_api_key
+            or self.gemini_api_key
+            or self.custom_openai_api_key
+        )
 
     def local_models(self) -> set[str]:
         """Return model IDs explicitly attested as local by this machine's operator."""

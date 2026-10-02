@@ -70,6 +70,22 @@ another process already running as the same OS user.
 - Provider credentials belong in `backend/.env` during development or
   `${XDG_CONFIG_HOME:-~/.config}/lemma/.env` in an installed Linux build. Both are
   outside release payloads; the installed file is created with mode `0600`.
+- Model routes are explicit and separately labeled as API key, account plan, local
+  runtime, or custom endpoint. API keys are passed directly to only the selected
+  LiteLLM request; they are not copied into process-wide environment variables,
+  browser storage, agent rows, run snapshots, logs, or model-connection responses.
+- Account-plan routes use an already authenticated official CLI and never fall back to
+  an API key. The adapter starts a fixed executable without a shell, strips credential
+  variables, uses an empty temporary working directory, disables user/project
+  customization and known tool surfaces, and bounds prompt bytes, captured output,
+  wall time, and process lifetime. CLI plan usage is remote egress. Vendor CLIs do not
+  expose a reliable provider-side output-token ceiling, and CLI updates can change
+  their flags; re-test after upgrades. Direct registered OAuth is preferable when a
+  provider offers an appropriate tool-free integration.
+- Ollama URLs are restricted to loopback. Custom OpenAI-compatible endpoints must use
+  HTTPS unless they are loopback; their operator controls billing, retention, and
+  downstream routing. An endpoint or model name is not proof that inference stays on
+  this machine.
 - Terminal and check processes receive a minimal allowlisted environment without
   provider keys, cloud tokens, credential variables, or agent sockets. Bounded Git
   processes use the same clean base; a separately confirmed push may add only a
@@ -91,6 +107,11 @@ another process already running as the same OS user.
   project model allowlist. Model IDs are operator assertions, not network isolation.
   These are local guardrails, not a provider-side billing cap; provider usage can be
   reported only after a call completes, and pricing configuration must remain current.
+- Each agent stores a connection ID and model ID separately. New task runs freeze the
+  actual execution connection (including a truthful mock override) as a redacted target
+  fingerprint, and each model-call record binds that snapshot to its prompts, model,
+  usage, and integrity hash. This supports audit/tamper detection without preserving a
+  credential or private executable/endpoint path.
 - Model output is a synthesis, not verified evidence. The current secure research
   agents do not browse the web automatically. Lemma's assurance gate can require a
   pre-run approved protocol, task-scoped sources, hash-checked excerpts, supported and

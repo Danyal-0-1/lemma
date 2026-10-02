@@ -10,12 +10,14 @@ from sqlmodel import SQLModel, create_engine
 
 from app import db
 from app.lab import repo
+from app.lab import routes as lab_routes
 from app.lab.orchestrator import LabOrchestrator
-from app.lab.schemas import AgentUpdate, ProjectUpdate
+from app.lab.schemas import AgentCreate, AgentUpdate, ProjectUpdate
 from app.main import app
 from app.models import ResearchProject, ResearchTask
 from app.providers import mock_provider
 from app.providers.mock_provider import MockProvider
+from app.settings import Settings
 
 
 @pytest.fixture
@@ -157,6 +159,20 @@ def test_patch_rejects_null_for_required_database_fields() -> None:
     assert update.department_id is None
     assert update.model is None
 
+    with pytest.raises(ValidationError, match="fields may not be null"):
+        AgentUpdate(model_connection=None)
+
+
+def test_agent_schema_rejects_unsafe_connection_identifiers() -> None:
+    with pytest.raises(ValidationError, match="model_connection"):
+        AgentCreate(
+            name="Researcher",
+            role="Analyst",
+            mission="Inspect evidence",
+            model_connection="../private-key",
+            model="openai/gpt-5",
+        )
+
 
 def test_task_prompt_serializes_adversarial_context_as_json_data() -> None:
     """Prompt-like founder text stays a JSON value rather than a structural delimiter."""
@@ -222,3 +238,129 @@ def test_lab_http_boundary_creates_and_hydrates_group(lab_db) -> None:
     assert created.json()["name"] == "Systems Research"
     assert snapshot.status_code == 200
     assert snapshot.json()["departments"][0]["id"] == created.json()["id"]
+
+
+def test_agent_api_persists_explicit_connection_and_rejects_mismatch(lab_db) -> None:
+    client = TestClient(app)
+    headers = {"Origin": "http://127.0.0.1:5173"}
+    base = {
+        "name": "Model specialist",
+        "role": "Researcher",
+        "mission": "Use the selected model route.",
+    }
+    try:
+        explicit = client.post(
+            "/api/lab/agents",
+            headers=headers,
+            json={
+                **base,
+                "model_connection": "openai-api",
+                "model": "openai/gpt-5",
+            },
+        )
+        inferred = client.post(
+            "/api/lab/agents",
+            headers=headers,
+            json={**base, "name": "Default specialist"},
+        )
+        mismatch = client.post(
+            "/api/lab/agents",
+            headers=headers,
+            json={
+                **base,
+                "name": "Wrong route",
+                "model_connection": "anthropic-api",
+                "model": "openai/gpt-5",
+            },
+        )
+    finally:
+        client.close()
+
+    assert explicit.status_code == 201
+    assert explicit.json()["model_connection"] == "openai-api"
+    assert explicit.json()["model"] == "openai/gpt-5"
+    assert inferred.status_code == 201
+    assert inferred.json()["model_connection"] == "deepseek-api"
+    assert mismatch.status_code == 422
+    assert "must start with" in mismatch.json()["detail"]
+
+
+def test_model_connection_catalog_never_returns_credentials(lab_db, monkeypatch) -> None:
+    settings = Settings(
+        _env_file=None,
+        mock_llm=False,
+        openai_api_key="never-return-this-secret",
+    )
+    monkeypatch.setattr(lab_routes, "get_settings", lambda: settings)
+
+    client = TestClient(app)
+    try:
+        response = client.get("/api/lab/model-connections")
+    finally:
+        client.close()
+
+    assert response.status_code == 200
+    assert response.json()["mock_mode"] is False
+    openai = next(
+        connection
+        for connection in response.json()["connections"]
+        if connection["id"] == "openai-api"
+    )
+    assert openai["configured"] is True
+    assert "never-return-this-secret" not in response.text
+    assert "api_key" not in openai
+    assert "executable" not in openai
+
+
+def test_model_connection_test_endpoint_is_bounded_and_redacts_errors(
+    lab_db, monkeypatch
+) -> None:
+    calls: list[tuple[str, str]] = []
+
+    async def successful_test(settings, connection_id: str, model: str):
+        calls.append((connection_id, model))
+        return {"ok": True, "connection_id": connection_id, "model": model}
+
+    monkeypatch.setattr(lab_routes.provider_factory, "test_connection", successful_test)
+    client = TestClient(app)
+    headers = {"Origin": "http://127.0.0.1:5173"}
+    try:
+        response = client.post(
+            "/api/lab/model-connections/openai-api/test",
+            headers=headers,
+            json={"model": "openai/gpt-5"},
+        )
+
+        async def invalid_test(settings, connection_id: str, model: str):
+            raise ValueError("invalid leaked-secret-token")
+
+        monkeypatch.setattr(lab_routes.provider_factory, "test_connection", invalid_test)
+        invalid = client.post(
+            "/api/lab/model-connections/openai-api/test",
+            headers=headers,
+            json={"model": "openai/gpt-5"},
+        )
+
+        async def failed_test(settings, connection_id: str, model: str):
+            raise RuntimeError("upstream leaked-secret-token")
+
+        monkeypatch.setattr(lab_routes.provider_factory, "test_connection", failed_test)
+        failed = client.post(
+            "/api/lab/model-connections/openai-api/test",
+            headers=headers,
+            json={"model": "openai/gpt-5"},
+        )
+    finally:
+        client.close()
+
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+    assert calls == [("openai-api", "openai/gpt-5")]
+    assert invalid.status_code == 422
+    assert "leaked-secret-token" not in invalid.text
+    assert invalid.json()["detail"] == "invalid model connection request"
+    assert failed.status_code == 502
+    assert "leaked-secret-token" not in failed.text
+    assert failed.json()["detail"] == (
+        "model connection test failed; verify its setup and try again"
+    )

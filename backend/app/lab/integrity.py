@@ -9,6 +9,9 @@ from typing import Any
 
 MAX_TASK_SOURCE_COUNT = 24
 MAX_TASK_SOURCE_CONTEXT = 40_000
+CONNECTION_PROVENANCE_KEYS = frozenset(
+    {"id", "provider", "kind", "auth_mode", "egress", "billing", "target_sha256"}
+)
 
 
 def canonical_json(value: Any) -> bytes:
@@ -63,6 +66,8 @@ def model_call_hash_payload(model_call: Any) -> dict[str, Any]:
         "agent_id",
         "stage",
         "model",
+        "connection_id",
+        "connection_snapshot",
         "system_prompt",
         "user_prompt",
         "policy_snapshot",
@@ -80,6 +85,26 @@ def model_call_hash_payload(model_call: Any) -> dict[str, Any]:
 
 def model_call_provenance_sha256(model_call: Any) -> str:
     return canonical_sha256(model_call_hash_payload(model_call))
+
+
+def legacy_model_call_provenance_sha256(model_call: Any) -> str:
+    """Reproduce hashes made before connection provenance was added in revision 0005."""
+    payload = model_call_hash_payload(model_call)
+    payload.pop("connection_id")
+    payload.pop("connection_snapshot")
+    return canonical_sha256(payload)
+
+
+def connection_provenance_is_valid(value: Any) -> bool:
+    """Validate the exact redacted route identity frozen into new research runs."""
+    if not isinstance(value, Mapping) or set(value) != CONNECTION_PROVENANCE_KEYS:
+        return False
+    if any(not isinstance(value[key], str) or not value[key] for key in value):
+        return False
+    target = value.get("target_sha256")
+    return isinstance(target, str) and len(target) == 64 and all(
+        character in "0123456789abcdef" for character in target
+    )
 
 
 def task_input_payload(task: Any) -> dict[str, Any]:
@@ -129,6 +154,7 @@ def agent_execution_payload(agent: Any) -> dict[str, Any]:
         "duties",
         "focus",
         "priorities",
+        "model_connection",
         "model",
         "status",
         "communication_scope",
@@ -188,12 +214,14 @@ def run_input_payload(
     founder_guidance: str = "",
     project: Any | None = None,
     agent: Any | None = None,
+    model_connection: Mapping[str, Any] | None = None,
     source_packet: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     return {
         "task": task_input_payload(task),
         "project": project_execution_payload(project) if project is not None else None,
         "agent": agent_execution_payload(agent) if agent is not None else None,
+        "model_connection": dict(model_connection) if model_connection is not None else None,
         "protocol": protocol_execution_payload(protocol),
         "founder_guidance": founder_guidance,
         "source_packet": source_packet or [],

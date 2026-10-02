@@ -17,7 +17,7 @@
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal, type ITheme } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { createTerminal, ptyUrl } from "../../lib/api";
 import { usePreferencesStore, type ResolvedTheme } from "../../store/preferencesStore";
@@ -28,6 +28,39 @@ const TERMINAL_THEMES: Record<ResolvedTheme, ITheme> = {
   light: { background: "#ffffff", foreground: "#3b3b3b", cursor: "#3b3b3b", selectionBackground: "#add6ff" },
   gray: { background: "#262626", foreground: "#d4d4d4", cursor: "#d4d4d4", selectionBackground: "#555555" },
 };
+
+type ConnectionState = "connecting" | "open" | "closed" | "error";
+
+interface ConnectionNotice {
+  state: ConnectionState;
+  message: string;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error && error.message.trim()
+    ? error.message
+    : "The backend could not create a terminal session.";
+}
+
+/** Turn a WebSocket close into a useful, non-technical status for the operator. */
+export function terminalCloseNotice(
+  close: Pick<CloseEvent, "code" | "reason">,
+  connectionFailed = false,
+): ConnectionNotice {
+  const reason = close.reason.trim();
+  if (close.code === 1000 && !connectionFailed) {
+    return { state: "closed", message: reason || "Terminal session ended." };
+  }
+  if (reason) {
+    return { state: "error", message: `Terminal connection closed: ${reason}` };
+  }
+  return {
+    state: "error",
+    message: connectionFailed
+      ? "Could not connect to the terminal. Confirm the backend is running, then retry."
+      : `Terminal connection closed unexpectedly (code ${close.code}).`,
+  };
+}
 
 /** The Terminal tab. `active` tells us when it's the visible tab (so we can refit). */
 export default function TerminalTab({
@@ -43,11 +76,18 @@ export default function TerminalTab({
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
+  const [attempt, setAttempt] = useState(0);
+  const [connection, setConnection] = useState<ConnectionNotice>({
+    state: "connecting",
+    message: "Starting trusted terminal…",
+  });
 
   // Build the terminal + socket once per workspace. Cleans up fully on unmount.
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
+
+    setConnection({ state: "connecting", message: "Starting trusted terminal…" });
 
     const term = new Terminal({
       fontFamily: "'JetBrains Mono', 'SF Mono', Menlo, monospace",
@@ -63,6 +103,7 @@ export default function TerminalTab({
     fitRef.current = fit;
 
     let disposed = false;
+    let socketFailed = false;
     const encoder = new TextEncoder();
 
     function sendResize(socket: WebSocket) {
@@ -83,8 +124,25 @@ export default function TerminalTab({
         const socket = new WebSocket(ptyUrl(terminal_id));
         socket.binaryType = "arraybuffer";
         wsRef.current = socket;
-        socket.onopen = () => sendResize(socket);
+        socket.onopen = () => {
+          if (disposed) return;
+          setConnection({ state: "open", message: "Terminal connected." });
+          sendResize(socket);
+        };
         socket.onmessage = (event) => term.write(new Uint8Array(event.data as ArrayBuffer));
+        socket.onerror = () => {
+          if (disposed) return;
+          socketFailed = true;
+          setConnection({
+            state: "error",
+            message: "Could not connect to the terminal. Confirm the backend is running, then retry.",
+          });
+        };
+        socket.onclose = (event) => {
+          if (disposed) return;
+          if (wsRef.current === socket) wsRef.current = null;
+          setConnection(terminalCloseNotice(event, socketFailed));
+        };
         // Keystrokes → BINARY frames (raw bytes into the shell).
         term.onData((data) => {
           if (socket.readyState === WebSocket.OPEN) {
@@ -92,7 +150,12 @@ export default function TerminalTab({
           }
         });
       })
-      .catch((error) => term.write(`\r\n[could not open terminal: ${error}]\r\n`));
+      .catch((error: unknown) => {
+        if (disposed) return;
+        const message = errorMessage(error);
+        term.write(`\r\n[could not open terminal: ${message}]\r\n`);
+        setConnection({ state: "error", message });
+      });
 
     // Keep the PTY size in sync with the container.
     const onResize = () => {
@@ -111,7 +174,7 @@ export default function TerminalTab({
       fitRef.current = null;
       wsRef.current = null;
     };
-  }, [workspaceId]);
+  }, [attempt, workspaceId]);
 
   useEffect(() => {
     if (termRef.current) termRef.current.options.theme = TERMINAL_THEMES[resolvedTheme];
@@ -135,5 +198,26 @@ export default function TerminalTab({
     }
   }, [active]);
 
-  return <div ref={containerRef} className="h-full w-full overflow-hidden" />;
+  return (
+    <div className="relative h-full w-full overflow-hidden">
+      <div ref={containerRef} className="h-full w-full overflow-hidden" />
+      {connection.state !== "open" && (
+        <div
+          className="absolute inset-x-3 top-3 z-10 flex items-center gap-3 rounded border border-line bg-sidebar px-3 py-2 text-xs text-fg shadow-lg"
+          role={connection.state === "connecting" ? "status" : "alert"}
+        >
+          <span className="min-w-0 flex-1">{connection.message}</span>
+          {connection.state !== "connecting" && (
+            <button
+              type="button"
+              className="rounded border border-line px-2 py-1 text-fg hover:bg-line"
+              onClick={() => setAttempt((value) => value + 1)}
+            >
+              Retry
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
 }

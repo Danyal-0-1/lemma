@@ -1402,6 +1402,8 @@ def begin_model_call(
     system_prompt: str,
     user_prompt: str,
     policy: ProjectPolicy,
+    connection_id: str = "legacy",
+    connection_snapshot: dict[str, object] | None = None,
 ) -> ModelCall:
     with get_session() as db:
         call = ModelCall(
@@ -1410,6 +1412,8 @@ def begin_model_call(
             agent_id=agent_id,
             stage=stage,
             model=model,
+            connection_id=connection_id,
+            connection_snapshot=connection_snapshot or {},
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             policy_snapshot={

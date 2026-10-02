@@ -486,6 +486,7 @@ for required_assurance_path in \
   share/lemma/app/backend/alembic.ini \
   share/lemma/app/backend/migrations/versions/0003_research_assurance.py \
   share/lemma/app/backend/migrations/versions/0004_research_assurance_hardening.py \
+  share/lemma/app/backend/migrations/versions/0005_model_connections.py \
   share/lemma/app/backend/migrations/versions; do
   [[ -e "$bundle/$required_assurance_path" ]] || {
     printf 'Research-assurance release payload is incomplete: %s\n' \

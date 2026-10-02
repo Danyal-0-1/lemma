@@ -228,12 +228,14 @@ export default function IdeWorkspace({ view }: { view: IdeView }) {
           <>
             <div className="ide-editor-tabs"><div className="ide-editor-tab is-active"><Icon name="terminal" size={14} /><span>Terminal</span></div></div>
             <div className="ide-terminal-area">
-              {workspace && hostExecution ? (
+              {!workspace ? (
+                <div className="ide-editor-empty"><Icon name="terminal" size={44} /><h2>No active workspace</h2><p>Create or restore a workspace before opening its terminal.</p></div>
+              ) : !hostExecution ? (
+                <div className="ide-editor-empty"><Icon name="terminal" size={44} /><h2>Trusted terminal is locked</h2><p>Enable <code>ENABLE_HOST_EXECUTION=true</code> only when you intend to run local commands, then restart the backend and reload this page.</p></div>
+              ) : (
                 <Suspense fallback={<div className="ide-side-message">Loading terminal…</div>}>
                   <TerminalTab workspaceId={workspace.id} active />
                 </Suspense>
-              ) : (
-                <div className="ide-editor-empty"><Icon name="terminal" size={44} /><h2>Trusted terminal is locked</h2><p>Enable <code>ENABLE_HOST_EXECUTION=true</code> only when you intend to run local commands, then restart the backend.</p></div>
               )}
             </div>
           </>

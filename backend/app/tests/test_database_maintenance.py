@@ -176,7 +176,7 @@ def test_0002_upgrades_populated_baseline_run_without_data_loss(tmp_path: Path) 
     engine.dispose()
 
     assert result.previous_revisions == ("0001_current_schema",)
-    assert result.current_revisions == ("0004_research_assurance_hardening",)
+    assert result.current_revisions == ("0005_model_connections",)
     assert result.backup is not None
     assert run == (1, None, 34)
     assert {
@@ -221,6 +221,63 @@ def test_0004_repairs_early_0003_assurance_shape(tmp_path: Path) -> None:
     engine.dispose()
 
     assert result.previous_revisions == ("0003_research_assurance",)
-    assert result.current_revisions == ("0004_research_assurance_hardening",)
+    assert result.current_revisions == ("0005_model_connections",)
     assert {"input_snapshot", "input_sha256"} <= run_columns
     assert {"snapshot_json", "confirmed_criteria"} <= acceptance_columns
+
+
+def test_0005_backfills_connection_provenance_without_data_loss(tmp_path: Path) -> None:
+    database = tmp_path / "model-connections.db"
+    engine = create_engine(f"sqlite:///{database}")
+    config = alembic_config(database)
+    with engine.begin() as connection:
+        config.attributes["connection"] = connection
+        command.upgrade(config, "0004_research_assurance_hardening")
+        connection.exec_driver_sql(
+            """
+            INSERT INTO lab_projects
+                (id, name, description, objective, status, created_at, updated_at)
+            VALUES ('project-1', 'Existing project', '', 'Keep it', 'active',
+                    '2026-01-01', '2026-01-01')
+            """
+        )
+        connection.exec_driver_sql(
+            """
+            INSERT INTO lab_agents
+                (id, department_id, name, role, mission, duties, focus, priorities,
+                 model, status, communication_scope, created_at, updated_at)
+            VALUES ('agent-1', NULL, 'Existing agent', 'Researcher', 'Keep it',
+                    '[]', '[]', '[]', 'deepseek/deepseek-chat', 'active',
+                    'department', '2026-01-01', '2026-01-01')
+            """
+        )
+        connection.exec_driver_sql(
+            """
+            INSERT INTO lab_model_calls
+                (id, project_id, run_id, agent_id, stage, model, system_prompt,
+                 user_prompt, policy_snapshot, status, tokens_in, tokens_out, usd,
+                 latency_ms, error, created_at, completed_at)
+            VALUES ('call-1', 'project-1', NULL, 'agent-1', 'research',
+                    'deepseek/deepseek-chat', 'system', 'user', '{}', 'completed',
+                    10, 20, 0.01, 50, NULL, '2026-01-01', '2026-01-01')
+            """
+        )
+
+    result = upgrade_database(engine, database)
+    with engine.connect() as connection:
+        agent = connection.exec_driver_sql(
+            "SELECT model, model_connection FROM lab_agents WHERE id = 'agent-1'"
+        ).one()
+        call = connection.exec_driver_sql(
+            """
+            SELECT model, connection_id, connection_snapshot
+            FROM lab_model_calls WHERE id = 'call-1'
+            """
+        ).one()
+    engine.dispose()
+
+    assert result.previous_revisions == ("0004_research_assurance_hardening",)
+    assert result.current_revisions == ("0005_model_connections",)
+    assert result.backup is not None
+    assert agent == ("deepseek/deepseek-chat", "legacy")
+    assert call == ("deepseek/deepseek-chat", "legacy", "{}")

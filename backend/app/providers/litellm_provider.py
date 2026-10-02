@@ -63,6 +63,13 @@ class LiteLLMProvider:
     MOCK_LLM=false and a matching API key is configured.
     """
 
+    def __init__(self, *, api_key: str = "", api_base: str = "") -> None:
+        # Credentials loaded from backend/.env are deliberately passed per request.
+        # They are never exported into the process environment where a terminal or
+        # subscription CLI could inherit them and change billing modes.
+        self._api_key = api_key
+        self._api_base = api_base
+
     async def _open_stream(
         self,
         model: str,
@@ -80,6 +87,11 @@ class LiteLLMProvider:
             try:
                 # stream=True yields chunks; include_usage asks the provider to send
                 # a final chunk carrying token counts (OpenAI-compatible behavior).
+                connection_kwargs: dict[str, str] = {}
+                if self._api_key:
+                    connection_kwargs["api_key"] = self._api_key
+                if self._api_base:
+                    connection_kwargs["api_base"] = self._api_base
                 return await litellm.acompletion(
                     model=model,
                     messages=payload,
@@ -87,6 +99,7 @@ class LiteLLMProvider:
                     stream_options={"include_usage": True},
                     max_tokens=min(max_output_tokens or MAX_OUTPUT_TOKENS, MAX_OUTPUT_TOKENS),
                     timeout=REQUEST_TIMEOUT_SECONDS,
+                    **connection_kwargs,
                 )
             except TRANSIENT_ERRORS as error:
                 attempt += 1
